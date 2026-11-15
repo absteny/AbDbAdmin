@@ -436,7 +436,7 @@ function editConnection(config={}, id=null) {
   result.setAttribute('aria-live','polite');
   function showResult(kind,title,...lines) {
     result.dataset.kind=kind;
-    result.replaceChildren(e('strong',{},t(title)),...lines);
+    result.replaceChildren(e('strong',{},t(title)),...lines.filter(line=>line!=null));
     result.hidden=false;
     if (kind!=='pending') result.scrollIntoView?.({block:'nearest'});
   }
@@ -455,13 +455,31 @@ function editConnection(config={}, id=null) {
       return;
     }
     const title=error.stage==='ssh'?'Ошибка SSH':error.stage==='database'?'Ошибка подключения к базе':'Не удалось проверить подключение';
-    const retry=error.code==='HANDSHAKE_NO_SSL_SUPPORT' && error.canUseSshEncryption?div('stack',
-      e('p',{},t('SSH шифрует соединение до SSH-сервера. От него до локальной базы TLS не используется.')),
-      button(t('Повторить через SSH без TLS к базе'),()=>{
+    let help;
+    if (error.code==='HANDSHAKE_NO_SSL_SUPPORT') {
+      const retry=()=>{
         sshOnlyEncryption=true;
         content.requestSubmit(submitter ?? undefined);
-      },'primary')):null;
-    showResult('error',title,e('p',{},error.message),retry);
+      };
+      if (error.canUseSshEncryption) {
+        help=div('stack',
+          e('p',{},t('SSH шифрует соединение до SSH-сервера. От него до локальной базы TLS не используется.')),
+          button(t('Повторить через SSH без TLS к базе'),retry,'primary'));
+      } else if (useSsh) {
+        help=div('stack',
+          e('p',{},t('Если база запущена на самом SSH-сервере, проверьте подключение к ней через 127.0.0.1. Для базы на другом сервере необходимо настроить TLS.')),
+          button(t('База на SSH-сервере: проверить 127.0.0.1'),()=>{
+            targetHost.value='127.0.0.1';
+            sshOnlyEncryption=true;
+            content.requestSubmit(content.querySelector('[value=test]'));
+          }));
+      } else {
+        help=div('stack',
+          e('p',{},t('Для прямого подключения настройте TLS на сервере базы. Если база доступна через SSH, заполните настройки туннеля.')),
+          button(t('Перейти к настройкам SSH'),()=>{sshMode.click();sshHost.focus();}));
+      }
+    }
+    showResult('error',title,e('p',{},error.message),help);
     toast(t(title),'error');
   }
   const content = form(div('fields',

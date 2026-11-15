@@ -1,4 +1,8 @@
 const english = {
+  "Если база запущена на самом SSH-сервере, проверьте подключение к ней через 127.0.0.1. Для базы на другом сервере необходимо настроить TLS.": "If the database runs on the SSH server itself, try 127.0.0.1. Configure TLS if the database runs on a different server.",
+  "База на SSH-сервере: проверить 127.0.0.1": "Database on the SSH server: try 127.0.0.1",
+  "Для прямого подключения настройте TLS на сервере базы. Если база доступна через SSH, заполните настройки туннеля.": "Configure TLS on the database server for a direct connection. If the database is accessible through SSH, enter the tunnel settings.",
+  "Перейти к настройкам SSH": "Open SSH settings",
   "База данных не поддерживает TLS. Проверьте настройки шифрования на сервере БД.": "The database does not support TLS. Check encryption settings on the database server.",
   "SSH шифрует соединение до SSH-сервера. От него до локальной базы TLS не используется.": "SSH encrypts the connection to the SSH server. TLS is not used from there to the local database.",
   "Повторить через SSH без TLS к базе": "Retry over SSH without database TLS",

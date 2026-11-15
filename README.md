@@ -143,8 +143,10 @@ If MySQL or MariaDB does not support TLS and is on the SSH server's
 loopback address, choose **Retry over SSH without database TLS** after
 the test reports that error. This keeps the SSH tunnel encrypted and
 uses no separate TLS session between the SSH server and the database.
-Direct connections and database addresses on other machines do not offer
-this retry. SSH private keys and passphrases are stored
+If you entered a public address for a database running on the SSH server
+itself, use **Database on the SSH server: try 127.0.0.1**. The retry updates
+the database host and keeps the SSH host and database port. For direct
+connections and databases on a separate host, configure database TLS. SSH private keys and passphrases are stored
 encrypted in the saved profile.
 
 ### Browse a database
