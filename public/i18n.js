@@ -1,4 +1,16 @@
 const english = {
+  "В базе нет таблиц для выгрузки": "The database has no tables to export",
+  "Выгрузка базы поддерживает только таблицы InnoDB": "Database export supports only InnoDB tables",
+  "Выгрузка базы не поддерживает внешние ключи на другие базы": "Database export does not support foreign keys pointing to other databases",
+  "База превышает лимит выгрузки SQL": "The database exceeds the SQL export limit",
+  "Выгрузка и восстановление": "Export and restore",
+  "Выгрузка базы": "Database export",
+  "Скачать SQL": "Download SQL",
+  "SQL-файл содержит структуру и данные таблиц InnoDB. До 30 таблиц, 5 000 строк суммарно, 1 000 строк на таблицу и 1 МБ.": "Export InnoDB table definitions and data. Up to 30 tables, 5,000 rows in total, 1,000 rows per table, and 1 MB.",
+  "Представления, процедуры, триггеры, события и пользователи не включаются. Не меняйте структуру во время выгрузки.": "Views, routines, triggers, events, and users are excluded. Avoid schema changes during export.",
+  "Открыть SQL-скрипты": "Open SQL scripts",
+  "Для восстановления выберите подключение к пустой базе и загрузите файл во вкладке «SQL-скрипты».": "To restore, select a connection to an empty database and upload the file under SQL scripts."
+,
   "Пользователи СУБД": "Database users",
   "Неверные данные учётной записи БД": "Enter valid database account details",
   "Имя базы с символами шаблона не поддерживается редактором прав": "The privilege editor does not support database names containing wildcard characters",

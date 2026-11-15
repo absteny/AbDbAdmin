@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
-import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount } from './native-tools.mjs';
+import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes } from './schema-editor.mjs';
 import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
@@ -521,19 +521,23 @@ async function api(req, res, url, event) {
         event.action='sql.script';
         return remote(profile,db=>db.script(sql,row=>row.map(limitText)),false,{scripts:true});
       }
-      if (action==='sql-export' && method==='GET') {
+      if (['sql-export','database-export'].includes(action) && method==='GET') {
         requireValue(user.admin && mysql,'Требуются права администратора',403);
+        const databaseExport=action==='database-export';
         const table=url.searchParams.get('table');
-        requireValue(table && table.length<=64);
-        event.action='sql.export';
-        const result=await remote(profile,db=>exportTableSql(db,profile.database,table));
+        requireValue(databaseExport || table && table.length<=64);
+        event.action=databaseExport?'database.export':'sql.export';
+        const result=await remote(profile,db=>databaseExport?exportDatabaseTables(db,profile.database):exportTableSql(db,profile.database,table));
+        requireValue(result.error!=='empty','В базе нет таблиц для выгрузки',404);
+        requireValue(result.error!=='engine','Выгрузка базы поддерживает только таблицы InnoDB',400);
+        requireValue(result.error!=='external','Выгрузка базы не поддерживает внешние ключи на другие базы',400);
         requireValue(result.error!=='table','Таблица недоступна',404);
         requireValue(result.error!=='type','Экспорт SQL не поддерживает этот тип столбца',400);
-        requireValue(!result.error,'Таблица превышает лимит экспорта SQL',413);
+        requireValue(!result.error,databaseExport?'База превышает лимит выгрузки SQL':'Таблица превышает лимит экспорта SQL',413);
         audit(event,200);
         event.action=null;
         res.setHeader('Content-Type','application/sql; charset=utf-8');
-        res.setHeader('Content-Disposition','attachment; filename="abdbadmin-table.sql"');
+        res.setHeader('Content-Disposition',databaseExport?'attachment; filename="abdbadmin-database.sql"':'attachment; filename="abdbadmin-table.sql"');
         res.end(result.sql);
         return;
       }

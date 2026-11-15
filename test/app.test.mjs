@@ -225,6 +225,23 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       const {body:batch}=await request(script,'POST',{sql:probe,confirmation:batchPreview.confirmation},admin);
       assert.deepEqual(batch.sets.map(set=>String(set.rows[0][0])),["13","29"]);
       assert.deepEqual(batch.sets.map(set=>set.columns[0]),["first","second"]);
+      await withDatabase(profile,db=>db.query('INSERT INTO clay_child(id,parent_id) VALUES (2,1)'));
+      const exported=await request(conn+'/database-export','GET',undefined,admin);
+      assert.match(exported.body,/FOREIGN_KEY_CHECKS=0/);
+      assert.match(exported.body,/CREATE TABLE `clay_child`/);
+      assert.match(exported.body,/CREATE TABLE `clay_parent`/);
+      assert.doesNotMatch(exported.body,/DROP TABLE/);
+      await withDatabase(profile,async db=>{
+        await db.query('DROP TABLE clay_child');
+        await db.query('DROP TABLE clay_parent');
+      });
+      const previewDb=await request(script,'POST',{sql:exported.body},admin);
+      await request(script,'POST',{sql:exported.body,confirmation:previewDb.body.confirmation},admin);
+      await withDatabase(profile,async db=>{
+        assert.deepEqual((await db.query('SELECT id,parent_id FROM clay_child')).rows,[[2,1]]);
+        await assert.rejects(db.query('INSERT INTO clay_child(id,parent_id) VALUES (3,55)'));
+        await db.query('DELETE FROM clay_child WHERE id=2');
+      });
       const roundtrip='clay_dump_test';
       await withDatabase(profile,async db=>{
         await db.query('DROP TABLE IF EXISTS clay_dump_test');

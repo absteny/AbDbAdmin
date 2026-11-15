@@ -187,3 +187,32 @@ export async function applyDatabaseAccount(db,database,input,engine) {
   await db.script(commands[input.operation](),row=>row);
   return true;
 }
+
+export async function exportDatabaseTables(db,database) {
+  await db.script('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',row=>row);
+  return db.transaction(async ()=>{
+    const {rows:tables}=await db.query(
+      "SELECT TABLE_NAME,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME LIMIT 31",
+      [database]);
+    if (!tables.length) return {error:'empty'};
+    if (tables.length>30) return {error:'size'};
+    if (tables.some(([,engine])=>String(engine).toLowerCase()!=='innodb')) return {error:'engine'};
+    const {rows:external}=await db.query(
+      'SELECT 1 FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND REFERENCED_TABLE_SCHEMA<>? LIMIT 1',
+      [database,database]);
+    if (external.length) return {error:'external'};
+    let sql='-- AbDbAdmin database tables export. Restore into an empty database.\n'+
+      'SET @abdb_old_fk=@@SESSION.FOREIGN_KEY_CHECKS;\nSET SESSION FOREIGN_KEY_CHECKS=0;\n';
+    let rows=0;
+    for (const [table] of tables) {
+      const exported=await exportTableSql(db,database,table);
+      if (exported.error) return exported;
+      rows+=exported.rows;
+      sql+=exported.sql;
+      if (rows>5000 || Buffer.byteLength(sql)>1048576) return {error:'size'};
+    }
+    sql+='SET SESSION FOREIGN_KEY_CHECKS=@abdb_old_fk;\n';
+    if (Buffer.byteLength(sql)>1048576) return {error:'size'};
+    return {sql,rows,tables:tables.length};
+  });
+}

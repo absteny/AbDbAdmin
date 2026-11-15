@@ -191,6 +191,22 @@ creation statement for a routine, trigger, or event. **Open in SQL scripts**
 copies the statement into an editable draft. Running it still requires a
 review and confirmation.
 
+### Export and restore multiple tables
+
+For MySQL and MariaDB administrators, **Export and restore** generates one
+SQL file with the base InnoDB tables and their rows. The export limits are
+30 tables, 5,000 rows overall, 1,000 rows per table, and a 1 MB SQL file.
+Views, routines, triggers, events, and database accounts are excluded.
+Database exports with cross-database foreign keys or unsupported column
+types are rejected. Avoid concurrent schema changes while exporting.
+
+Choose a connection to an empty database and upload the file in
+**SQL scripts**. The file contains no DROP statements and temporarily
+disables foreign-key checks for the restore session so related tables can
+load in any order. Use the unmodified export from a consistent source.
+A failed script can leave earlier statements applied. Use native database
+backup tools for production backups.
+
 ### Manage MySQL and MariaDB accounts
 
 As an AbDbAdmin administrator, select a MySQL or MariaDB connection and open

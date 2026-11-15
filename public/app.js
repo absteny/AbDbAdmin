@@ -112,7 +112,7 @@ function select(name, entries, value, attrs={}) {
   return result;
 }
 const utilityRoutes=new Set(['users','audit','demo']);
-const databaseRoutes=new Set(['structure','tables','graph','sql','database-search','sql-script','database-objects','schema-editor','server-status','database-accounts']);
+const databaseRoutes=new Set(['structure','tables','graph','sql','database-search','sql-script','database-objects','schema-editor','server-status','database-accounts','database-backup']);
 let pendingTable=null;
 let scriptDraft=null;
 let appliedHash=null;
@@ -122,7 +122,7 @@ function allowedView(view,connection) {
   if (!databaseRoutes.has(view) || !connection) return false;
   if (view==='sql') return connection.engine!=='demo' && ['admin','sql'].includes(connection.level);
   if (view==='database-search') return ['mysql','mariadb'].includes(connection.engine);
-  if (['sql-script','database-objects','schema-editor','server-status','database-accounts'].includes(view)) {
+  if (['sql-script','database-objects','schema-editor','server-status','database-accounts','database-backup'].includes(view)) {
     return state.user.admin && ['mysql','mariadb'].includes(connection.engine);
   }
   return true;
@@ -232,6 +232,7 @@ function render() {
       ...[['structure',t('Структура')],['tables',t('Обзор')],['graph',t('3D-схема')],...(!demo && ['admin','sql'].includes(active.level)?[['sql','SQL']]:[])]
         .map(([key,title])=>button(title,()=>setView(key),null,{'aria-current':String(state.view===key)})),
       mysqlWorkspace?button(t('Поиск по базе'),()=>setView('database-search'),null,{'aria-current':String(state.view==='database-search')}):null,
+      admin && mysqlWorkspace?button(t('Выгрузка и восстановление'),()=>setView('database-backup'),null,{'aria-current':String(state.view==='database-backup')}):null,
       admin && mysqlWorkspace?button(t('SQL-скрипты'),()=>setView('sql-script'),null,{'aria-current':String(state.view==='sql-script')}):null,
       admin && mysqlWorkspace?button(t('Пользователи СУБД'),()=>setView('database-accounts'),null,{'aria-current':String(state.view==='database-accounts')}):null,
       admin && mysqlWorkspace?button(t('Состояние сервера'),()=>setView('server-status'),null,{'aria-current':String(state.view==='server-status')}):null,
@@ -249,6 +250,7 @@ function render() {
     return;
   }
   if (state.view === 'sql') return sqlView(content);
+  if (state.view==='database-backup' && mysqlWorkspace && admin) return backupView(content);
   if (state.view==='sql-script' && mysqlWorkspace && admin) return scriptsView(content,stamp);
   if (state.view==='database-search' && mysqlWorkspace) return databaseSearchView(content,stamp);
   if (state.view==='database-accounts' && mysqlWorkspace && admin) return databaseAccountsView(content,stamp).catch(error=>showError(content,stamp,error));
@@ -369,7 +371,7 @@ const auditActions = {
   'sql.execute':'Выполнение SQL','row.write':'Операция со строкой','row.insert':'Добавление строки',
   'row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры','csv.import':'Импорт CSV','sql.script':'Выполнение SQL-скрипта','sql.export':'Экспорт SQL','table.maintenance':'Обслуживание таблицы',
   'db-account.create':'Создание пользователя СУБД','db-account.password':'Смена пароля пользователя СУБД',
-  'db-account.drop':'Удаление пользователя СУБД','db-account.grant':'Выдача прав СУБД','db-account.revoke':'Отзыв прав СУБД',
+  'db-account.drop':'Удаление пользователя СУБД','db-account.grant':'Выдача прав СУБД','db-account.revoke':'Отзыв прав СУБД','database.export':'Выгрузка базы',
 };
 
 async function auditView(target,stamp,before=null) {
@@ -416,6 +418,28 @@ function demoView(target) {
     e('p',{},t('Откройте 3D-схему, найдите связь orders → customers и откройте orders. Сравните customer_id в заказах с id в customers.')),
     button(t('Открыть 3D-схему'),click(async ()=>{await choose(demo.id);setView('graph');}),null,{disabled:!demo}),
   ));
+}
+
+function backupView(target) {
+  const download=button(t('Скачать SQL'),click(async ()=>{
+    download.disabled=true;
+    try {
+      const response=await fetch('/api/'+route('database-export'),{headers:{'Accept-Language':language}});
+      if (!response.ok) throw new Error((await response.json()).error || t('Ошибка запроса'));
+      const objectUrl=URL.createObjectURL(await response.blob());
+      const link=e('a',{href:objectUrl,download:'abdbadmin-database.sql'});
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(()=>URL.revokeObjectURL(objectUrl),1000);
+    } finally {download.disabled=false;}
+  }),'primary');
+  target.append(div('panel stack',
+    e('h2',{},t('Выгрузка и восстановление')),
+    e('p',{},t('SQL-файл содержит структуру и данные таблиц InnoDB. До 30 таблиц, 5 000 строк суммарно, 1 000 строк на таблицу и 1 МБ.')),
+    e('p',{},t('Представления, процедуры, триггеры, события и пользователи не включаются. Не меняйте структуру во время выгрузки.')),
+    div('row',download,button(t('Открыть SQL-скрипты'),()=>setView('sql-script'))),
+    e('small',{},t('Для восстановления выберите подключение к пустой базе и загрузите файл во вкладке «SQL-скрипты».'))));
 }
 
 function scriptsView(target,stamp) {
