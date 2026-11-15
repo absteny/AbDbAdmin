@@ -84,6 +84,7 @@ const userName = value => typeof value === 'string' && /^[a-z0-9_.-]{3,48}$/i.te
 const passwordValid = value => typeof value === 'string' && value.length >= 12 && value.length <= 256;
 const bootstrap = join(dataDir, 'initial-admin.txt');
 const operation = process.argv[2];
+const localOnly = process.env.ABDB_LOCAL_ONLY === '1';
 const reset = operation === 'reset-admin';
 const basicSetting = database.prepare("SELECT value FROM settings WHERE name='basic_auth'");
 const saveSetting = database.prepare('INSERT INTO settings VALUES (?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value');
@@ -103,8 +104,10 @@ if (operation === 'reset-basic') {
   process.exit(0);
 }
 if (operation === 'show-access') {
-  const entry = database.prepare("SELECT value FROM settings WHERE name='basic_recovery'").get();
-  console.log('HTTP Basic Auth\nUsername: gateway\nPassword: '+reveal(entry.value));
+  if (!localOnly) {
+    const entry = database.prepare("SELECT value FROM settings WHERE name='basic_recovery'").get();
+    console.log('HTTP Basic Auth\nUsername: gateway\nPassword: '+reveal(entry.value));
+  }
   console.log('\nPanel sign-in\nUsername: admin');
   try {
     const password = readFileSync(bootstrap,'utf8').trim();
@@ -147,7 +150,6 @@ if (reset) {
 }
 
 const secure = process.env.COOKIE_SECURE === '1';
-const localOnly = process.env.ABDB_LOCAL_ONLY === '1';
 function safeId(id) {
   return /^\d+$/.test(id ?? '') && Number.isSafeInteger(Number(id)) ? Number(id) : null;
 }
@@ -493,7 +495,7 @@ createServer(async (req,res) => {
     requireValue(!localOnly || (/^127\.0\.0\.1(?::[0-9]+)?$/.test(req.headers.host || '') && !Object.keys(req.headers).some(name=>name==='forwarded' || name.startsWith('x-forwarded-'))), 'Локальный режим',403);
     const url = new URL(req.url,'http://localhost');
     if (url.pathname === '/healthz' && req.method === 'GET') {res.end('ok'); return;}
-    if (!authorized(req.headers.authorization)) {
+    if (!localOnly && !authorized(req.headers.authorization)) {
       res.setHeader('WWW-Authenticate','Basic realm="AbDbAdmin", charset="UTF-8"');
       res.statusCode=401;
       res.setHeader('Content-Type','text/plain; charset=utf-8');

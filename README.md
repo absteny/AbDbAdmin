@@ -15,14 +15,14 @@ sh install.sh --local
 
 Open [http://127.0.0.1:8099](http://127.0.0.1:8099).
 
-1. In the browser's Basic Auth dialog, enter **gateway** and the password under
-   **HTTP Basic Auth** in the terminal output.
-2. In the AbDbAdmin sign-in form, enter **admin** and the password under
-   **Panel sign-in**.
-3. Change the initial administrator password using **Change password**. The
-   gateway password is separate. Store it in your password manager.
-4. Choose **English** or **Russian** using the language selector. English is
+1. Enter **admin** and the password under **Panel sign-in** in the terminal.
+2. Change that password using **Change password**.
+3. Choose **English** or **Russian** using the language selector. English is
    the default, and your selection is remembered by that browser.
+
+Local-only mode opens directly to the panel sign-in form without a Basic
+Auth prompt. Installations started without this mode still require the
+separate **gateway** credentials before panel sign-in.
 
 The `--local` flag overrides any external bind address in `.env`, publishes
 the Docker port on **127.0.0.1 only**, and makes AbDbAdmin reject other Host

@@ -8,9 +8,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { withDatabase } from '../database.mjs';
 
-test('First run, access control, demo, and audit', {timeout:90000}, async t=>{
+for (const local of [false,true]) test(local ? 'Local access, demo, and audit' : 'Remote Basic Auth and rotation', {timeout:90000}, async t=>{
   const directory = await mkdtemp(join(tmpdir(),'claydb-test-'));
-  const server = spawn(process.execPath,['server.mjs'],{env:{...process.env,DATA_DIR:directory,PORT:'0',BIND_HOST:'127.0.0.1',COOKIE_SECURE:'0',ABDB_LOCAL_ONLY:'1'}});
+  const server = spawn(process.execPath,['server.mjs'],{env:{...process.env,DATA_DIR:directory,PORT:'0',BIND_HOST:'127.0.0.1',COOKIE_SECURE:'0',ABDB_LOCAL_ONLY:local?'1':'0'}});
   t.after(async ()=>{
     if (server.exitCode==null && server.signalCode==null) {
       const exited = once(server,'exit');
@@ -32,21 +32,36 @@ test('First run, access control, demo, and audit', {timeout:90000}, async t=>{
   const base = 'http://127.0.0.1:'+port;
   function command(name) {
     return execFileSync(process.execPath,['--disable-warning=ExperimentalWarning','server.mjs',name],{
-      env:{...process.env,DATA_DIR:directory},encoding:'utf8',
+      env:{...process.env,DATA_DIR:directory,ABDB_LOCAL_ONLY:local?'1':'0'},encoding:'utf8',
     });
   }
   function gatewayPassword() {
     return /Username: gateway\nPassword: ([A-Za-z0-9_-]{43})/.exec(command('show-access'))?.[1];
   }
-  const basic = gatewayPassword();
-  assert.ok(basic);
-  assert.equal((await readFile(join(directory,'claydb.sqlite-wal'))).includes(basic),false);
-  const auth = 'Basic '+Buffer.from('gateway:'+basic).toString('base64');
+  if (!local) {
+    const basic=gatewayPassword();
+    assert.ok(basic);
+    assert.equal((await readFile(join(directory,'claydb.sqlite-wal'))).includes(basic),false);
+    const auth=secret=>'Basic '+Buffer.from('gateway:'+secret).toString('base64');
+    for (const path of ['/','/style.css','/app.js','/api/connections']) {
+      const denied=await fetch(base+path);
+      assert.equal(denied.status,401);
+      assert.match(denied.headers.get('WWW-Authenticate'),/^Basic realm="AbDbAdmin"/);
+    }
+    assert.equal((await fetch(base,{headers:{Authorization:auth(basic)}})).status,200);
+    command('reset-basic');
+    const replacement=gatewayPassword();
+    assert.ok(replacement && replacement!==basic);
+    assert.equal((await fetch(base,{headers:{Authorization:auth(basic)}})).status,401);
+    assert.equal((await fetch(base,{headers:{Authorization:auth(replacement)}})).status,200);
+    return;
+  }
+  assert.ok(!command('show-access').includes('Username: gateway'));
   async function request(path, method='GET', data, cookie='', code=200, csrf=true) {
     const response = await fetch(base+'/api/'+path,{
       method,
       headers:{
-        Authorization:auth, Cookie:cookie, ...(csrf?{'X-AbDbAdmin':'1'}:{}),
+        Cookie:cookie, ...(csrf?{'X-AbDbAdmin':'1'}:{}),
         ...(data===undefined?{}:{'Content-Type':'application/json'}),
       },
       body:data===undefined?undefined:JSON.stringify(data),
@@ -59,24 +74,19 @@ test('First run, access control, demo, and audit', {timeout:90000}, async t=>{
   const initial = (await readFile(join(directory,'initial-admin.txt'),'utf8')).trim();
   assert.match(initial,/^[\w-]{43}$/);
   assert.equal(await (await fetch(base+'/healthz')).text(),'ok');
-  for (const path of ['/', '/style.css', '/app.js', '/api/connections']) {
-    const denied = await fetch(base+path);
-    assert.equal(denied.status,401);
-    assert.match(denied.headers.get('WWW-Authenticate'),/^Basic realm="AbDbAdmin"/);
-  }
-  const wrong = await fetch(base,{headers:{Authorization:'Basic '+Buffer.from('gateway:'+'0'.repeat(43)).toString('base64')}});
-  assert.equal(wrong.status,401);
-  assert.match(await (await fetch(base,{headers:{Authorization:auth}})).text(),/<html lang="en">/);
+  const localPage=await fetch(base);
+  assert.equal(localPage.headers.get('WWW-Authenticate'),null);
+  assert.match(await localPage.text(),/<html lang="en">/);
   const outsideHost = await new Promise((resolve,reject)=>{
-    get(base,{headers:{Authorization:auth,Host:'remote.example'}},response=>{
+    get(base,{headers:{Host:'remote.example'}},response=>{
       response.resume();
       resolve(response.statusCode);
     }).on('error',reject);
   });
   assert.equal(outsideHost,403);
-  assert.equal((await fetch(base,{headers:{Authorization:auth,'X-Forwarded-For':'192.0.2.10'}})).status,403);
-  assert.equal((await fetch(base+'/i18n.js',{headers:{Authorization:auth}})).status,200);
-  const unauthenticated = language => fetch(base+'/api/session',{headers:{Authorization:auth,'Accept-Language':language}}).then(res=>res.json());
+  assert.equal((await fetch(base,{headers:{'X-Forwarded-For':'192.0.2.10'}})).status,403);
+  assert.equal((await fetch(base+'/i18n.js')).status,200);
+  const unauthenticated = language => fetch(base+'/api/session',{headers:{'Accept-Language':language}}).then(res=>res.json());
   assert.deepEqual(await unauthenticated('en'),{error:'Sign in to the panel'});
   assert.deepEqual(await unauthenticated('ru'),{error:'Войдите в панель'});
   await request('connections','GET',undefined,'',401);
@@ -175,7 +185,7 @@ test('First run, access control, demo, and audit', {timeout:90000}, async t=>{
   assert.ok(log.entries.some(e=>e.action==='sql.execute' && e.status===403));
   assert.ok(log.entries.some(e=>e.action==='csv.export' && e.actor==='reader' && e.status===200));
   assert.ok(log.entries.some(e=>e.action==='row.write' && e.actor==='reader' && e.status===403));
-  for (const secret of ['secret-row-marker','secret-sql-marker',initial,basic,'test-reader-pass']) {
+  for (const secret of ['secret-row-marker','secret-sql-marker',initial,'test-reader-pass']) {
     assert.equal(JSON.stringify(log).includes(secret),false);
   }
   const oldest=log.entries.at(-1).id;
@@ -185,9 +195,4 @@ test('First run, access control, demo, and audit', {timeout:90000}, async t=>{
   await request('session','GET',undefined,reader,401);
   await request('logout','POST',undefined,admin);
   await request('session','GET',undefined,admin,401);
-  command('reset-basic');
-  const replacement = gatewayPassword();
-  assert.ok(replacement && replacement!==basic);
-  assert.equal((await fetch(base,{headers:{Authorization:auth}})).status,401);
-  assert.equal((await fetch(base,{headers:{Authorization:'Basic '+Buffer.from('gateway:'+replacement).toString('base64')}})).status,200);
 });

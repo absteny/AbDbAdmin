@@ -68,16 +68,14 @@ jobs:
           sh install.sh --local > access.txt
           grep -q 'Local-only mode' access.txt
           ! grep -q 'Private IP:' access.txt
+          ! grep -q 'Username: gateway' access.txt
           rm -f access.txt
           docker compose port abdbadmin 8099 | grep -Fx '127.0.0.1:8099'
       - run: |
           curl --fail --silent http://127.0.0.1:8099/healthz
           docker compose exec -T abdbadmin test -s /app/data/initial-admin.txt
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8099/)" = 401
-          credentials=$(docker compose exec -T abdbadmin node --disable-warning=ExperimentalWarning server.mjs show-access)
-          password=$(printf '%s\n' "$credentials" | sed -n '3s/^Password: //p')
-          test -n "$password"
+          curl --fail --silent http://127.0.0.1:8099/ --output /dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8099/api/session)" = 401
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'X-Forwarded-For: 192.0.2.42' http://127.0.0.1:8099/)" = 403
-          curl --fail --silent --user "gateway:$password" http://127.0.0.1:8099/ --output /dev/null
       - if: always()
         run: docker compose down -v
