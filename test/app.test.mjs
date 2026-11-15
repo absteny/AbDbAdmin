@@ -211,13 +211,28 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       const overview=await request(conn+'/server-status','GET',undefined,admin);
       assert.ok(overview.body.status.some(([name])=>name.toLowerCase()==='uptime'));
       assert.ok(overview.body.grants.length);
-      await withDatabase(profile,async db=>{
-        await db.script('DROP EVENT IF EXISTS clay_route_event',row=>row);
-        await db.script('CREATE EVENT clay_route_event ON SCHEDULE AT CURRENT_TIMESTAMP + INTERVAL 1 DAY DISABLE DO SELECT 1',row=>row);
-      });
+      const objectPath=conn+'/object-change';
+      const event={kind:'EVENT',name:'clay_route_event'};
+      const changeObject=async values=>{
+        const {body:preview}=await request(objectPath,'POST',{...values,preview:true},admin);
+        await request(objectPath,'POST',{...values,confirmation:preview.confirmation},admin);
+      };
+      await withDatabase(profile,db=>db.script('DROP EVENT IF EXISTS clay_route_event',row=>row));
+      const createEvent={...event,operation:'create',amount:1,unit:'DAY',sql:'SELECT 1'};
+      await request(objectPath,'POST',createEvent,admin,409);
+      await changeObject(createEvent);
       const object=await request(conn+'/object-definition?kind=EVENT&name=clay_route_event','GET',undefined,admin);
       assert.match(object.body.sql,/CREATE.*EVENT/i);
-      await withDatabase(profile,db=>db.script('DROP EVENT clay_route_event',row=>row));
+      assert.match(object.body.sql,/DISABLE DO SELECT 1/i);
+      await changeObject({...event,operation:'schedule',amount:2,unit:'HOUR'});
+      await changeObject({...event,operation:'body',sql:'SELECT 2'});
+      assert.match((await request(conn+'/object-definition?kind=EVENT&name=clay_route_event','GET',undefined,admin)).body.sql,/DO SELECT 2/i);
+      await changeObject({...event,operation:'enable'});
+      const events=(await request(conn+'/database-objects','GET',undefined,admin)).body.events;
+      assert.equal(events.find(row=>row[0]===event.name)[1],'ENABLED');
+      await changeObject({...event,operation:'disable'});
+      await changeObject({...event,operation:'drop'});
+      assert.ok(!(await request(conn+'/database-objects','GET',undefined,admin)).body.events.some(row=>row[0]===event.name));
       const script=conn+'/sql-script';
       const probe='SELECT 13 AS first; SELECT 29 AS second';
       const {body:batchPreview}=await request(script,'POST',{sql:probe},admin);
@@ -342,6 +357,11 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
   await assert.rejects(readFile(join(directory,'initial-admin.txt')),{code:'ENOENT'});
   await request('login','POST',{name:'admin',password:initial},'',401);
   const {body:log} = await request('audit','GET',undefined,admin);
+  if (log.next!==null) {
+    const older=(await request('audit?before='+log.next,'GET',undefined,admin)).body;
+    assert.ok(older.entries.length && older.entries.every(entry=>entry.id<log.next));
+    log.entries.push(...older.entries);
+  }
   assert.ok(log.entries.some(e=>e.action==='login' && e.status===401 && e.actor===null));
   assert.ok(log.entries.some(e=>e.action==='permission.change' && e.actor==='admin' && e.connection_id===demoId && e.subject_id===readerId && e.status===200));
   assert.ok(log.entries.some(e=>e.action==='sql.execute' && e.status===403));

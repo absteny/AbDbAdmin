@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
-import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount } from './native-tools.mjs';
+import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount, objectCommand } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes, tableEngines } from './schema-editor.mjs';
 import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
@@ -589,6 +589,19 @@ async function api(req, res, url, event) {
         const sql=await remote(profile,db=>objectDefinition(db,profile.database,kind,name));
         requireValue(sql,'Определение объекта недоступно для этой учётной записи',403);
         return {sql};
+      }
+      if (action==='object-change' && method==='POST') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        const input=await body(req,400000);
+        const sql=objectCommand(profile.database,input);
+        requireValue(sql,'Проверьте заполнение полей');
+        const confirmation=createHmac('sha256',key).update(JSON.stringify(
+          ['database-object',user.id,record.id,record.secret,sql])).digest('hex');
+        if (input.preview===true) return {sql,confirmation,database:profile.database};
+        requireValue(input.confirmation===confirmation,'Сначала откройте предпросмотр изменений',409);
+        event.action='db-object.'+input.operation;
+        await remote(profile,db=>db.script(sql,row=>row));
+        return {};
       }
       if (action==='database-objects' && method==='GET') {
         requireValue(user.admin && mysql,'Требуются права администратора',403);

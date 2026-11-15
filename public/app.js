@@ -372,6 +372,8 @@ const auditActions = {
   'row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры','csv.import':'Импорт CSV','sql.script':'Выполнение SQL-скрипта','sql.export':'Экспорт SQL','table.maintenance':'Обслуживание таблицы',
   'db-account.create':'Создание пользователя СУБД','db-account.password':'Смена пароля пользователя СУБД',
   'db-account.drop':'Удаление пользователя СУБД','db-account.grant':'Выдача прав СУБД','db-account.revoke':'Отзыв прав СУБД','database.export':'Выгрузка базы',
+  'db-object.create':'Создание события','db-object.drop':'Удаление объекта',
+  'db-object.enable':'Включение события','db-object.disable':'Выключение события','db-object.schedule':'Изменение расписания','db-object.body':'Изменение команды события',
 };
 
 async function auditView(target,stamp,before=null) {
@@ -581,7 +583,8 @@ async function serverStatusView(target,stamp) {
 }
 async function databaseObjectsView(target,stamp) {
   const path=route('object-definition');
-  const id=state.connection.id;
+  const changePath=route('object-change');
+  const connection=state.connection;
   const data=await api(route('database-objects'));
   if (stamp!==renderId) return;
   const lists=[
@@ -589,18 +592,77 @@ async function databaseObjectsView(target,stamp) {
     ['Триггеры',['Имя','Таблица','Момент','Действие'],data.triggers,()=>'TRIGGER'],
     ['События',['Имя','Статус','Тип'],data.events,()=>'EVENT'],
   ];
+
+  function draft(sql) {
+    scriptDraft={id:connection.id,sql};
+    if (dialog.open) dialog.close();
+    setView('sql-script');
+  }
+
+  function change(title,fields,makeInput) {
+    const editor=form(fields,t('Предпросмотр изменений'),async values=>{
+      const input=makeInput(values);
+      const preview=await api(changePath,'POST',{...input,preview:true});
+      if (stamp!==renderId) return;
+      openDialog(t('Предпросмотр изменений'),form([
+        e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' / '+preview.database),
+        e('p',{},t('Вы точно хотите внести эти изменения?')),
+        e('pre',{class:'schema-sql'},preview.sql),
+      ],t('Подтвердить'),async ()=>{
+        await api(changePath,'POST',{...input,confirmation:preview.confirmation});
+        dialog.close();
+        render();
+      },button(t('Назад'),()=>openDialog(title,editor))));
+    });
+    openDialog(title,editor);
+  }
+  const schedule=()=>div('fields',
+    label(t('Интервал'),field('amount','number','1',{min:1,max:100000,required:true})),
+    label(t('Единица времени'),select('unit',['MINUTE','HOUR','DAY','WEEK','MONTH'].map(value=>[value,t(value)]),'HOUR')));
+  function createEvent() {
+    change(t('Создать событие'),[
+      label(t('Название'),field('name','text','',{required:true,maxlength:64})),
+      schedule(),
+      label(t('Текст SQL'),e('textarea',{name:'sql',class:'code',required:true,maxlength:65000})),
+      e('small',{},t('Новое событие создаётся выключенным.')),
+    ],values=>({kind:'EVENT',operation:'create',...values,amount:Number(values.amount)}));
+  }
+  const templates={
+    PROCEDURE:'CREATE PROCEDURE procedure_name()\nBEGIN\n  SELECT 1;\nEND',
+    FUNCTION:'CREATE FUNCTION function_name() RETURNS INT DETERMINISTIC\nRETURN 1',
+    TRIGGER:'CREATE TRIGGER trigger_name BEFORE INSERT ON table_name FOR EACH ROW\nSET NEW.column_name = NEW.column_name',
+  };
+  target.append(div('panel row',
+    button(t('Создать событие'),createEvent,'primary'),
+    ...[['PROCEDURE','Шаблон процедуры'],['FUNCTION','Шаблон функции'],['TRIGGER','Шаблон триггера']]
+      .map(([key,title])=>button(t(title),()=>draft(templates[key])))));
+
+  function controls(row,kind) {
+    const name=row[0];
+    const describe=button(t('Определение SQL'),click(async ()=>{
+      const {sql}=await api(path+'?'+new URLSearchParams({kind,name}));
+      if (stamp!==renderId) return;
+      openDialog(t('Определение SQL'),div('stack',e('pre',{class:'schema-sql'},sql),
+        button(t('Открыть в SQL-скриптах'),()=>draft(sql))));
+    }));
+    const switchEvent=()=>{
+      const operation=row[1]==='ENABLED'?'disable':'enable';
+      const title=t(operation==='enable'?'Включить событие':'Выключить событие');
+      change(title,e('p',{},name),()=>({kind,name,operation}));
+    };
+    return div('row',describe,
+      kind==='EVENT'?button(t(row[1]==='ENABLED'?'Выключить событие':'Включить событие'),switchEvent):null,
+      kind==='EVENT'?button(t('Изменить интервал'),()=>change(t('Изменить интервал'),schedule(),
+        values=>({kind,name,operation:'schedule',unit:values.unit,amount:Number(values.amount)}))):null,
+      kind==='EVENT'?button(t('Изменить команду события'),()=>change(t('Изменить команду события'),[
+        e('strong',{},name),
+        label(t('Текст SQL'),e('textarea',{name:'sql',class:'code',required:true,maxlength:65000})),
+      ],values=>({kind,name,operation:'body',sql:values.sql}))):null,
+      button(t('Удалить'),()=>change(t('Удалить объект'),e('p',{},kind+' · '+name),()=>({kind,name,operation:'drop'})),'danger'));
+  }
   for (const [title,headers,rows,kind] of lists) target.append(div('panel stack',
-    e('h2',{},t(title)),rows.length?resultTable({columns:headers.map(header=>t(header)),rows},row=>
-      button(t('Определение SQL'),click(async ()=>{
-        const {sql}=await api(path+'?'+new URLSearchParams({kind:kind(row),name:row[0]}));
-        if (stamp!==renderId) return;
-        openDialog(t('Определение SQL'),div('stack',e('pre',{class:'schema-sql'},sql),
-          button(t('Открыть в SQL-скриптах'),()=>{
-            scriptDraft={id,sql};
-            dialog.close();
-            setView('sql-script');
-          })));
-      }))):e('p',{},t('Объекты не найдены.'))));
+    e('h2',{},t(title)),rows.length?resultTable({columns:headers.map(header=>t(header)),rows},row=>controls(row,kind(row))):
+      e('p',{},t('Объекты не найдены.'))));
 }
 
 function openCsvImport() {

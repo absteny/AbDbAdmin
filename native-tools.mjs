@@ -216,3 +216,24 @@ export async function exportDatabaseTables(db,database) {
     return {sql,rows,tables:tables.length};
   });
 }
+
+export function objectCommand(database,input) {
+  const {kind,name,operation}=input;
+  if (!['PROCEDURE','FUNCTION','TRIGGER','EVENT'].includes(kind) ||
+      typeof name!=='string' || !name.length || name.length>64 || /[\u0000-\u001f\u007f]/.test(name)) return null;
+  const target=identifier(false,database)+'.'+identifier(false,name);
+  if (operation==='drop') return 'DROP '+kind+' '+target;
+  if (kind!=='EVENT') return null;
+  if (operation==='enable' || operation==='disable') return 'ALTER EVENT '+target+' '+operation.toUpperCase();
+  if (operation==='body') {
+    if (typeof input.sql!=='string' || !input.sql.trim() || input.sql.length>65000) return null;
+    return 'ALTER EVENT '+target+' DO '+input.sql.trim();
+  }
+  if (!['create','schedule'].includes(operation)) return null;
+  const {amount,unit}=input;
+  if (!Number.isInteger(amount) || amount<1 || amount>100000 || !['MINUTE','HOUR','DAY','WEEK','MONTH'].includes(unit)) return null;
+  const schedule=' ON SCHEDULE EVERY '+amount+' '+unit;
+  if (operation==='schedule') return 'ALTER EVENT '+target+schedule;
+  if (typeof input.sql!=='string' || !input.sql.trim() || input.sql.length>65000) return null;
+  return 'CREATE EVENT '+target+schedule+' DISABLE DO '+input.sql.trim();
+}

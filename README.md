@@ -236,6 +236,19 @@ Use **Change engine** to convert between InnoDB and MyISAM where supported.
 The editor blocks conversion to MyISAM when the table has an incoming or
 outgoing foreign key. Moving to MyISAM changes transaction support.
 
+### Manage routines, triggers, and events
+
+In **Database objects** on MySQL and MariaDB, administrators can review and
+confirm a DROP statement for a procedure, function, trigger, or event. Event
+forms can create a disabled recurring event, replace its SQL statement,
+change its interval, and enable or disable it. Enabling an event schedules
+real database work. The server account must have the necessary privileges.
+
+Procedure, function, and trigger templates open in **SQL scripts** as
+editable drafts. Replace the example names and statements before running
+them. The dedicated forms do not provide a visual editor for routine or
+trigger bodies. Event and object changes are recorded in the audit log.
+
 ### Review row changes
 
 Type directly into the row editor. Typing marks the field as changed.
