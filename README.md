@@ -32,7 +32,24 @@ setup if you want access from the host only. Use [Docker Engine 28 or newer](htt
 The flag controls inbound access
 to AbDbAdmin. It can still connect to a database on another machine.
 
-For native PowerShell:
+### Windows PowerShell
+
+Start Docker Desktop. For a new installation, clone the repository into a
+folder you own, or download and extract the complete repository ZIP.
+
+```powershell
+Set-Location $HOME
+git clone https://github.com/absteny/AbDbAdmin.git
+Set-Location .\AbDbAdmin
+& .\install.ps1
+```
+
+The script uses the `compose.yaml` beside it, regardless of the current directory.
+If running Compose yourself, first use `Set-Location` to enter the folder containing
+`compose.yaml`, or pass its absolute path to `docker compose -f`. Running from
+`C:\Windows\system32` without `-f` gives **no configuration file provided: not found**.
+
+To use manual commands in the project directory:
 
 ```powershell
 $env:ABDB_BIND = '127.0.0.1'
@@ -124,6 +141,47 @@ passwords, session tokens, profile secrets, raw SQL, and row values. It keeps
 roughly the latest 10,000 events. The log is intended for operational review.
 It can be altered by someone with access to the local data volume, and an
 audit storage error can leave a gap after a database operation completes.
+
+## Advanced MySQL and MariaDB administration
+
+Enable the optional official phpMyAdmin container when you need server or
+schema administration:
+
+```powershell
+& .\install.ps1 -Advanced
+```
+
+```sh
+sh install.sh --local --advanced
+```
+
+Open [http://127.0.0.1:8100](http://127.0.0.1:8100) or use **Advanced MySQL and MariaDB** in the AbDbAdmin administrator sidebar.
+Sign in with a database account. Enter its server address as seen from Docker. The companion uses its
+own session and the database server's permissions. AbDbAdmin credentials,
+saved connection secrets, permission settings and audit history are separate.
+The companion is for MySQL and MariaDB. Use a PostgreSQL-native tool for
+equivalent PostgreSQL administration.
+
+| Task | Where to start in phpMyAdmin |
+| --- | --- |
+| CSV and SQL imports or dump restoration | **Import** on the target database or table |
+| SQL dumps and exports in other formats | **Export**, then **Custom** to choose databases, structure and data |
+| Batch scripts and stored-procedure results | **SQL** or import a SQL file |
+| Create and edit tables, columns, indexes and foreign keys | **Structure**, **Operations**, and **Relation view** |
+| Visual schema layout | **Designer** in the database menu. Configure [phpMyAdmin configuration storage](https://docs.phpmyadmin.net/en/latest/setup.html#phpmyadmin-configuration-storage) for its advanced layout features. |
+| Database users and privileges | **User accounts** and **Privileges** |
+| Procedures, triggers and scheduled events | **Routines**, **Triggers**, and **Events** |
+| Global search and maintenance | **Search**, **Status**, and **Operations** |
+
+Available controls depend on the server version and database privileges.
+The upload limit is 64 MB by default and can be adjusted with
+`ABDB_ADVANCED_UPLOAD_LIMIT`. Set `ABDB_ADVANCED_PORT` if port 8100 is in use.
+The port is published on loopback. Keep it off public reverse proxies.
+To stop the companion without stopping AbDbAdmin:
+
+```sh
+docker compose --profile advanced stop phpmyadmin
+```
 
 ## 4. Optional remote access
 

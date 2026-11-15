@@ -4,14 +4,21 @@ cd "$(dirname "$0")"
 
 show_access=0
 local_mode=0
+advanced=0
 for flag in "$@"; do
   case "$flag" in
     --local) local_mode=1 ;;
+    --advanced) advanced=1 ;;
     --show-access) show_access=1 ;;
-    --help|-h) printf '%s\n' 'Usage: sh install.sh [--local] [--show-access]'; exit 0 ;;
+    --help|-h) printf '%s\n' 'Usage: sh install.sh [--local] [--advanced] [--show-access]'; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$flag" >&2; exit 2 ;;
   esac
 done
+
+if [ "$advanced" -eq 1 ] && [ "$local_mode" -ne 1 ]; then
+  echo "Use --local with --advanced." >&2
+  exit 2
+fi
 
 if [ "$local_mode" -eq 1 ]; then
   export ABDB_BIND=127.0.0.1 ABDB_LOCAL_ONLY=1 COOKIE_SECURE=0
@@ -19,6 +26,7 @@ if [ "$local_mode" -eq 1 ]; then
 fi
 
 if [ "$show_access" -eq 0 ]; then
+  export ABDB_ADVANCED_ENABLED="$advanced"
   if [ "$local_mode" -eq 1 ]; then
     engine_version=$(docker version --format '{{.Server.Version}}')
     major=${engine_version%%.*}
@@ -30,7 +38,11 @@ if [ "$show_access" -eq 0 ]; then
       exit 1
     fi
   fi
-  docker compose up --build -d --wait
+  if [ "$advanced" -eq 1 ]; then
+    docker compose --profile advanced up --build -d --wait
+  else
+    docker compose up --build -d --wait
+  fi
 fi
 
 compose_value() {
@@ -66,5 +78,9 @@ else
   printf 'HTTPS:       https://%s\n' "$domain"
   printf 'Redirect:    http://%s:8080\n' "$domain"
   printf '%s\n' 'The IP and domain links require network or proxy setup. Use HTTPS for remote sign-in.'
+fi
+if [ "$advanced" -eq 1 ]; then
+  address=$(docker compose --profile advanced port phpmyadmin 80)
+  printf 'Advanced MySQL/MariaDB: http://%s\n' "$address"
 fi
 docker compose exec -T abdbadmin node --disable-warning=ExperimentalWarning server.mjs show-access

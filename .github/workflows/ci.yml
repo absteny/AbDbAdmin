@@ -77,5 +77,22 @@ jobs:
           curl --fail --silent http://127.0.0.1:8099/ --output /dev/null
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8099/api/session)" = 401
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'X-Forwarded-For: 192.0.2.42' http://127.0.0.1:8099/)" = 403
+      - run: |
+          sh install.sh --local --advanced > advanced-access.txt
+          rm -f advanced-access.txt
+          docker compose --profile advanced port phpmyadmin 80 | grep -Fx '127.0.0.1:8100'
+          curl --fail --silent --retry 12 --retry-delay 2 --retry-connrefused http://127.0.0.1:8100/ --output /dev/null
       - if: always()
-        run: docker compose down -v
+        run: docker compose --profile advanced down -v
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD install.ps1), [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }

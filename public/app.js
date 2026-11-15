@@ -165,6 +165,7 @@ function render() {
       button(t('Пользователи и права'),()=>setView('users'),null,{'aria-current':String(people)}),
       button(t('Журнал действий'),()=>setView('audit'),null,{'aria-current':String(state.view==='audit')}),
       button(t('Демо'),()=>setView('demo'),null,{'aria-current':String(state.view==='demo')})):null,
+    state.user.advancedUrl?e('a',{href:state.user.advancedUrl,target:'_blank',rel:'noopener noreferrer'},t('Расширенное управление MySQL и MariaDB')):null,
     div('grow'),
     div('stack',languagePicker(),e('small',{},state.user.name),button(t('Сменить пароль'),changePassword),button(t('Выйти'),click(async()=>{
       await api('logout','POST');tableViews.clear();state.user=null;login();

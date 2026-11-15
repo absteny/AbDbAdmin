@@ -1,4 +1,5 @@
 const english = {
+  "Расширенное управление MySQL и MariaDB": "Advanced MySQL and MariaDB",
   "Строка изменилась. Обновите таблицу перед повтором.": "The row changed. Refresh the table before trying again.",
   "Столбец недоступен": "Column is unavailable",
   "Рабочая база (production)": "Production database",

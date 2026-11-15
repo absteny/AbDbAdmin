@@ -156,6 +156,11 @@ if (reset) {
 }
 
 const secure = process.env.COOKIE_SECURE === '1';
+function advancedUrl(user) {
+  const port=Number(process.env.ABDB_ADVANCED_PORT || 8100);
+  return user.admin && localOnly && process.env.ABDB_ADVANCED_ENABLED==='1' &&
+    Number.isInteger(port) && port>0 && port<=65535 ? 'http://127.0.0.1:'+port : null;
+}
 function safeId(id) {
   return /^\d+$/.test(id ?? '') && Number.isSafeInteger(Number(id)) ? Number(id) : null;
 }
@@ -342,7 +347,7 @@ async function api(req, res, url, event) {
     database.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
     database.prepare('INSERT INTO sessions VALUES (?,?,?)').run(digest(session),record.id,Date.now()+sessionDuration);
     res.setHeader('Set-Cookie',cookie(session,sessionDuration/1000));
-    return {name:record.name,admin:record.admin};
+    return {name:record.name,admin:record.admin,advancedUrl:advancedUrl(record)};
   }
 
   const session = /(?:^|;\s*)claydb_session=([\w-]{43})(?:;|$)/.exec(req.headers.cookie || '')?.[1];
@@ -365,7 +370,7 @@ async function api(req, res, url, event) {
     event.connection = demo.id;
     return demo;
   }
-  if (resource === 'session' && method === 'GET') return user;
+  if (resource === 'session' && method === 'GET') return {...user,advancedUrl:advancedUrl(user)};
   if (resource === 'logout' && method === 'POST') {
     event.action = 'logout';
     database.prepare('DELETE FROM sessions WHERE hash=?').run(digest(session));

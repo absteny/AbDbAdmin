@@ -6,6 +6,8 @@ services:
     environment:
       ABDB_LOCAL_ONLY: "${ABDB_LOCAL_ONLY:-0}"
       COOKIE_SECURE: "${COOKIE_SECURE:-0}"
+      ABDB_ADVANCED_ENABLED: "${ABDB_ADVANCED_ENABLED:-0}"
+      ABDB_ADVANCED_PORT: "${ABDB_ADVANCED_PORT:-8100}"
       ABDB_PORT: "${ABDB_PORT:-8099}"
       ABDB_IP: "${ABDB_IP:-}"
       ABDB_DOMAIN: "${ABDB_DOMAIN:-}"
@@ -14,6 +16,15 @@ services:
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  phpmyadmin:
+    image: phpmyadmin:apache
+    profiles: [advanced]
+    ports:
+      - "127.0.0.1:${ABDB_ADVANCED_PORT:-8100}:80"
+    environment:
+      PMA_ARBITRARY: "1"
+      UPLOAD_LIMIT: "${ABDB_ADVANCED_UPLOAD_LIMIT:-64M}"
     security_opt: [no-new-privileges:true]
 volumes:
   claydb-data:
