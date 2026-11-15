@@ -319,6 +319,20 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
       assert.deepEqual((await db.query('SELECT label FROM clay_parent WHERE id=92')).rows,[[defaultInput.defaultValue]]);
       await db.query('DELETE FROM clay_parent WHERE id=92');
     });
+    const properties=pg
+      ? {operation:'set-column-comment',schema,table:'clay_parent',columnName:'label',comment:"A 'quoted' comment"}
+      : {operation:'modify-column',table:'clay_parent',column:{name:'label',type:'VARCHAR(128)',nullable:true,
+          charset:'utf8mb4',collation:'utf8mb4_bin',comment:"A 'quoted' comment"}};
+    const {body:propertiesPreview}=await request(editor,'POST',{...properties,preview:true},admin);
+    await request(editor,'POST',{...properties,confirmation:propertiesPreview.confirmation},admin);
+    const revised=(await request(editor+'?'+new URLSearchParams({schema,table:'clay_parent'}),'GET',undefined,admin)).body;
+    assert.equal((revised.columnDetails ?? revised.columns)[1][pg?8:5],"A 'quoted' comment");
+    if (!pg) assert.equal(revised.columns[1][7],'utf8mb4_bin');
+    await withDatabase(profile,async db=>{
+      await db.query('INSERT INTO clay_parent(id) VALUES (93)');
+      assert.deepEqual((await db.query('SELECT label FROM clay_parent WHERE id=93')).rows,[[defaultInput.defaultValue]]);
+      await db.query('DELETE FROM clay_parent WHERE id=93');
+    });
     const resetDefault={...defaultInput,defaultValue:null};
     const {body:resetPreview}=await request(editor,'POST',{...resetDefault,preview:true},admin);
     await request(editor,'POST',{...resetDefault,confirmation:resetPreview.confirmation},admin);
@@ -346,7 +360,7 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
     assert.equal((await request(ascending,'GET',undefined,reader)).body.rows[0][0],1);
     await withDatabase(profile,db=>db.query('DELETE FROM clay_parent WHERE id>1'));
     assert.equal(Number(page.definition[0][4].numeric_precision),pg?32:10);
-    assert.equal(Number(page.definition[1][4].character_maximum_length),pg?128:80);
+    assert.equal(Number(page.definition[1][4].character_maximum_length),128);
     const views=conn+'/views?schema='+schema+'&table=clay_parent';
     const criteria={filters:[{column:'label',operator:'contains',value:'ori'}],sort:{column:'id',direction:'desc'}};
     await request(views,'POST',{name:'Original rows',view:criteria},reader);

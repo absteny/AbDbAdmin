@@ -1354,33 +1354,97 @@ async function editBrowseColumn(name,loaded) {
         state.schema=null;
         render();
       },button(t('Назад'),()=>openDialog(title,editor))));
-    });
+    },button(t('Назад'),()=>openDialog(title,menu)));
     openDialog(title,editor);
   }
+  const postgres=state.connection.engine==='postgres';
   function modify() {
     const typeField=schemaTypeField(settings,type);
+    const charset=field('charset','text',column[6] ?? '',{maxlength:64});
+    const collation=field('collation','text',(postgres?column[4]:column[7]) ?? '',{maxlength:128});
+    const auto=field('autoIncrement','checkbox','1',{checked:/\bauto_increment\b/i.test(column[4] ?? '')});
+    const comment=field('comment','text',column[5] ?? '',{maxlength:1024});
+    const textOptions=div('fields',postgres?null:label(t('Кодировка'),charset),label(t('Сравнение'),collation));
+    const autoLabel=e('label',{class:'check'},auto,'AUTO_INCREMENT');
+    const family=typeField.control.querySelector('[name=family]');
+    const refresh=()=>{
+      const type=family.value;
+      const character=/CHAR|TEXT/.test(type);
+      textOptions.hidden=!character;
+      autoLabel.hidden=!/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT)$/.test(type);
+    };
+    family.addEventListener('change',refresh);
+    refresh();
     operation([
       e('strong',{},name+' · '+type),typeField.control,
       e('label',{class:'check'},field('nullable','checkbox','1',{checked:nullable==='YES'}),t('Допускает NULL')),
+      textOptions,postgres?null:autoLabel,postgres?null:label(t('Комментарий'),comment),
       e('small',{},t('Смена типа преобразует существующие значения.')),
-    ],values=>({operation:'modify-column',column:{name,type:typeField.value(),nullable:Boolean(values.nullable)}}));
+    ],values=>({operation:'modify-column',column:{name,type:typeField.value(),nullable:Boolean(values.nullable),
+      ...(!textOptions.hidden?{collation:collation.value,...(!postgres?{charset:charset.value}:{})}:{}),
+      ...(!postgres?{autoIncrement:!autoLabel.hidden && auto.checked,comment:comment.value}:{})}}));
   }
-  openDialog(title,div('stack',
-    e('p',{},t('Текущий тип')+' · '+type),
-    div('row',button(t('Значение по умолчанию'),()=>operation([
-      label(t('Значение'),field('defaultValue','text','',{maxlength:1024})),
-      e('label',{class:'check'},field('remove','checkbox','1'),t('Удалить значение по умолчанию')),
-    ],values=>({operation:'set-column-default',columnName:name,defaultValue:values.remove?null:values.defaultValue}))),
-    button(t('Переименовать столбец'),()=>operation(
-      label(t('Название'),field('name','text',name,{required:true,maxlength:64})),
-      values=>({operation:'rename-column',columnName:name,name:values.name}))),
-    canModify?button(t('Изменить тип столбца'),modify):e('small',{},t('Особые свойства столбца')))));
-
+  let menu;
+  function nativeEdit() {
+    const quote=value=>{
+      const delimiter=postgres?'"':'`';
+      return delimiter+value.replaceAll(delimiter,delimiter+delimiter)+delimiter;
+    };
+    const prefix='ALTER TABLE '+quote(schema)+'.'+quote(table)+(postgres?' ALTER COLUMN ':' MODIFY COLUMN ')+quote(name)+' ';
+    const editor=form([
+      e('p',{},t('Введите полное определение или команду ALTER TABLE для свойства столбца.')),
+      e('code',{},name+' · '+type+' · '+(nullable==='YES'?'NULL':'NOT NULL')),
+      label(t('Одна SQL-команда'),e('textarea',{name:'sql',class:'code sql-console-input',required:true,maxlength:65000,
+        spellcheck:'false',value:prefix})),
+    ],t('Предпросмотр изменений'),async ({sql})=>{
+      if (sql.trim()===prefix.trim()) throw new Error(t('Введите SQL-запрос'));
+      openDialog(t('Предпросмотр изменений'),form([
+        e('strong',{},[state.connection.name,schema,table,name].join(' / ')),
+        e('p',{},t('Вы точно хотите внести эти изменения?')),
+        e('pre',{class:'schema-sql'},sql),
+      ],t('Подтвердить'),async ()=>{
+        await api(route('sql'),'POST',{sql});
+        dialog.close();
+        state.schema=null;
+        render();
+      },button(t('Назад'),()=>openDialog(t('Расширенное редактирование SQL'),editor))));
+    },button(t('Назад'),()=>openDialog(title,menu)));
+    openDialog(t('Расширенное редактирование SQL'),editor);
+  }
+  const details=postgres?[
+    ['По умолчанию',column[3]],['Сравнение',column[4]],['Столбец идентификатора',column[5]],
+    ['Вычисляемый столбец',column[6]],['Выражение генерации',column[7]],['Комментарий',column[8]],
+  ]:[
+    ['По умолчанию',column[3]],['Дополнительно',column[4]],['Комментарий',column[5]],
+    ['Кодировка',column[6]],['Сравнение',column[7]],['Индекс',column[8]],['Выражение генерации',column[9]],
+  ];
+  menu=div('stack',
+    e('dl',{class:'column-editor-properties'},
+      [['Тип',type],['Допускает NULL',nullable==='YES'?t('Да'):t('Нет')],...details]
+        .map(([label,value])=>[e('dt',{},t(label)),e('dd',{},value==null || value===''?'—':String(value))])),
+    div('row',
+      canModify?button(t('Изменить тип и свойства'),modify,'primary'):null,
+      button(t('Переименовать столбец'),()=>operation(
+        label(t('Название'),field('name','text',name,{required:true,maxlength:64})),
+        values=>({operation:'rename-column',columnName:name,name:values.name}))),
+      button(t('Значение по умолчанию'),()=>operation([
+        e('p',{},t('Текущее значение')+' · '+(column[3] ?? '—')),
+        label(t('Значение'),field('defaultValue','text','',{maxlength:1024})),
+        e('label',{class:'check'},field('remove','checkbox','1'),t('Удалить значение по умолчанию')),
+      ],values=>({operation:'set-column-default',columnName:name,defaultValue:values.remove?null:values.defaultValue}))),
+      postgres?button(t('Комментарий'),()=>operation([
+        label(t('Комментарий'),field('comment','text',column[8] ?? '',{maxlength:1024})),
+      ],values=>({operation:'set-column-comment',columnName:name,comment:values.comment || null}))):null,
+      postgres?button('NULL / NOT NULL',()=>operation([
+        e('label',{class:'check'},field('nullable','checkbox','1',{checked:nullable==='YES'}),t('Допускает NULL')),
+      ],values=>({operation:'set-column-nullability',columnName:name,nullable:Boolean(values.nullable)}))):null,
+      button(t('Расширенное редактирование SQL'),nativeEdit)));
+  openDialog(title,menu);
 }
 
 function filterControls(columns) {
   const view=currentTableView();
-  const items=div('stack');
+  const items=div('filter-items');
   const choices=columns.map(name=>[name,name]);
   const sort=select('sort',[['',t('По умолчанию')],...choices],view.sort?.column ?? '');
   const direction=select('direction',[['asc',t('По возрастанию')],['desc',t('По убыванию')]],view.sort?.direction ?? 'desc');
@@ -1405,36 +1469,19 @@ function filterControls(columns) {
   view.filters.forEach(addFilter);
   direction.disabled=!sort.value;
   sort.addEventListener('change',()=>{direction.disabled=!sort.value;});
-  return e('fieldset',{class:'catalog-filter'},e('legend',{},t('Фильтры и сортировка')),form([
-    items,div('row filter-controls',label(t('Сортировка'),sort),label(t('Порядок'),direction),add),
-  ],t('Применить'),async ()=>{
-    const filters=Array.from(items.children,item=>Object.fromEntries(
-      Array.from(item.querySelectorAll('input,select'),control=>[control.name,control.value])));
-    applyTableView({filters,sort:sort.value?{column:sort.value,direction:direction.value}:null});
-  },[
-    button(t('Сохранённые представления'),click(savedViews)),
-    view.filters.length || view.sort?button(t('Сбросить фильтры'),()=>applyTableView({filters:[],sort:null})):null,
-  ]));
-}
-
-async function savedViews() {
-  const path=route('views')+'?'+rowParams(false);
-  const scope=tableScope();
-  const list=await api(path);
-  if (!state.connection || !state.table || scope!==tableScope()) return;
-  openDialog(t('Сохранённые представления'),div('stack',
-    list.length ? list.map(item=>div('row spread',e('strong',{},item.name),div('row',
-      button(t('Применить'),()=>{dialog.close();applyTableView(item.view);}),
-      button(t('Удалить'),()=>confirmAction(t('Удалить представление?'),item.name,async ()=>{
-        await api(path+'&id='+item.id,'DELETE');
-        render();
-      }),'danger')))) : e('p',{},t('Представлений пока нет')),
-    form([e('p',{},t('Сохранение с тем же именем заменит существующее представление.')),
-      label(t('Название'),field('name','text','',{required:true,maxlength:80}))],
-      t('Сохранить текущий вид'),async data=>{
-        await api(path,'POST',{name:data.name,view:currentTableView()});
-        dialog.close();
-      })));
+  const error=e('p',{class:'form-error',role:'alert'});
+  return e('form',{class:'catalog-filter compact-filters','aria-label':t('Фильтры и сортировка'),onsubmit:event=>{
+    event.preventDefault();
+    try {
+      const filters=Array.from(items.children,item=>Object.fromEntries(
+        Array.from(item.querySelectorAll('input,select'),control=>[control.name,control.value])));
+      applyTableView({filters,sort:sort.value?{column:sort.value,direction:direction.value}:null});
+    } catch (reason) {error.textContent=reason.message;}
+  }},
+  div('row filter-controls',e('strong',{},t('Фильтры')),label(t('Сортировка'),sort),label(t('Порядок'),direction),
+    add,submit(t('Применить')),
+    view.filters.length || view.sort?button(t('Сбросить фильтры'),()=>applyTableView({filters:[],sort:null})):null),
+  items,error);
 }
 
 function rowDialog(data,path,row) {

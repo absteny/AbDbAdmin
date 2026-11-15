@@ -1,4 +1,8 @@
 const english = {
+  "Изменить тип и свойства": "Edit type and properties",
+  "Расширенное редактирование SQL": "Advanced SQL editing",
+  "Введите полное определение или команду ALTER TABLE для свойства столбца.": "Enter the full column definition or the ALTER TABLE clause for the property you want to change.",
+  "Текущее значение": "Current value",
   "Обновление каждые 3 секунды · история за 10 минут в этом браузере": "Refreshes every 3 seconds · last 10 minutes stored in this browser",
   "Последний замер: {time}": "Last sample: {time}",
   "Открытые подключения": "Open connections",

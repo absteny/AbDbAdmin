@@ -35,11 +35,14 @@ function mysqlColumnType(value) {
 
 export const tableEngines=['InnoDB','MyISAM'];
 
-function columnDefault(value,pg=false) {
-  if (value===null) return 'DROP DEFAULT';
-  if (typeof value!=='string' || value.length>1024 || value.includes('\0')) throw new TypeError('Invalid default');
+function columnLiteral(value,pg=false) {
+  if (typeof value!=='string' || value.length>1024 || value.includes('\0')) throw new TypeError('Invalid column literal');
   const escaped=(pg?value.replaceAll('\\','\\\\'):value).replaceAll("'","''");
-  return 'SET DEFAULT '+(pg?'E':'')+"'"+escaped+"'";
+  return (pg?'E':'')+"'"+escaped+"'";
+}
+
+function columnDefault(value,pg=false) {
+  return value===null?'DROP DEFAULT':'SET DEFAULT '+columnLiteral(value,pg);
 }
 
 export function schemaStatement(database,input,definition) {
@@ -73,14 +76,23 @@ export function schemaStatement(database,input,definition) {
       const type=mysqlColumnType(input.column.type);
       const current=definition?.columnChanges.find(([name])=>name===input.column?.name);
       if (!current?.[1]) return null;
-      const charset=/^(?:VAR)?CHAR\(|^(?:TINY|MEDIUM|LONG)?TEXT$/.test(type) && current[2] && current[3]
-        ? ' CHARACTER SET '+current[2]+' COLLATE '+current[3] : '';
-      if (current[5] && (input.column.nullable || !/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT)\b/.test(type))) return null;
-      const comment=definition.columns.find(([name])=>name===input.column.name)?.[5];
+      const options=input.column;
+      const character=/^(?:VAR)?CHAR\(|^(?:TINY|MEDIUM|LONG)?TEXT$/.test(type);
+      const cs=options.charset ?? current[2];
+      const co=options.collation ?? current[3];
+      const auto=options.autoIncrement ?? current[5];
+      const comment=options.comment ?? definition.columns.find(([name])=>name===options.name)?.[5];
+      const validSetting=value=>value==null || typeof value==='string' && /^(?:[a-z0-9_]{1,64})?$/i.test(value);
+      if (!validSetting(cs) || !validSetting(co) || typeof auto!=='boolean') throw new TypeError('Invalid column property');
+      if (!character && (options.charset || options.collation)) throw new TypeError('Collation requires a character type');
+      const charset=character?(cs?' CHARACTER SET '+cs:'')+(co?' COLLATE '+co:''):'';
+      if (auto && (options.nullable || !/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT)\b/.test(type))) return null;
       if (current[4]!=null && !/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT|DECIMAL|FLOAT|DOUBLE)\b/.test(type)) return null;
-      return alter+'MODIFY COLUMN '+quote(input.column.name)+' '+type+charset+
-        (input.column.nullable?' NULL':' NOT NULL')+(current[4]==null?'':' DEFAULT '+current[4])+
-        (current[5]?' AUTO_INCREMENT':'')+(comment?' COMMENT '+columnDefault(comment).slice('SET DEFAULT '.length):'');
+      if (current[6]!=null && !character) return null;
+      const defaultValue=current[4] ?? current[6];
+      return alter+'MODIFY COLUMN '+quote(options.name)+' '+type+charset+
+        (options.nullable?' NULL':' NOT NULL')+(defaultValue==null?'':' DEFAULT '+defaultValue)+
+        (auto?' AUTO_INCREMENT':'')+(comment!==undefined?' COMMENT '+columnLiteral(comment):'');
     }
     case 'change-engine':
       if (!tableEngines.includes(input.engine)) throw new TypeError('Invalid engine');
@@ -105,7 +117,7 @@ export function schemaStatement(database,input,definition) {
 export async function tableDefinition(db,database,table) {
   const args=[database,table];
   const objects=await db.query(
-    'SELECT TABLE_TYPE,ENGINE,TABLE_COLLATION,TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?',args);
+    'SELECT TABLE_TYPE,ENGINE,TABLE_COLLATION,TABLE_COMMENT,VERSION() FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?',args);
   if (objects.rows[0]?.[0]!=='BASE TABLE') return null;
   const columns=await db.query(
     'SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,COLUMN_COMMENT,CHARACTER_SET_NAME,COLLATION_NAME,COLUMN_KEY,GENERATION_EXPRESSION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION',args);
@@ -120,13 +132,22 @@ export async function tableDefinition(db,database,table) {
     'SELECT 1 FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_SCHEMA=? AND REFERENCED_TABLE_NAME=? LIMIT 1',args);
   const simpleName=value=>value==null || /^[a-z0-9_]+$/i.test(value);
   const numeric=/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT|DECIMAL|FLOAT|DOUBLE)\b/i;
+  const maria=/mariadb/i.test(objects.rows[0][4]);
   const columnChanges=columns.rows.map(([name,type,nullable,defaultValue,extra,comment,charset,collation,,generated])=>{
-    const hasDefault=defaultValue!==null && !(nullable==='YES' && defaultValue==='NULL');
+    const hasDefault=defaultValue!==null && !(maria && nullable==='YES' && defaultValue==='NULL');
     const numericDefault=hasDefault && numeric.test(type) && /^-?\d+(?:\.\d+)?$/.test(defaultValue)?defaultValue:null;
+    const textual=/^(?:(?:VAR)?CHAR\(|(?:TINY|MEDIUM|LONG)?TEXT$)/i.test(type);
+    let textDefault=null;
+    if (hasDefault && textual && !extra && typeof defaultValue==='string' && defaultValue.length<=1024 && !defaultValue.includes('\0')) {
+      if (!maria) textDefault=columnLiteral(defaultValue);
+      else if (/^'(?:[^'\\]|''|\\\\)*'$/.test(defaultValue)) {
+        textDefault=columnLiteral(defaultValue.slice(1,-1).replace(/''|\\\\/g,pair=>pair[0]));
+      }
+    }
     const auto=extra.toLowerCase()==='auto_increment';
-    return [name,(!hasDefault || numericDefault!==null) && (!extra || auto) && !generated &&
+    return [name,(!hasDefault || numericDefault!==null || textDefault!==null) && (!extra || auto) && !generated &&
       comment.length<=1024 && Boolean(mysqlColumnType(type)) && simpleName(charset) && simpleName(collation),
-      charset,collation,numericDefault,auto];
+      charset,collation,numericDefault,auto,textDefault];
   });
   return {engine:objects.rows[0][1],collation:objects.rows[0][2],comment:objects.rows[0][3],columns:columns.rows,columnChanges,
     hasForeignKeys:Boolean(foreignKeys.rows.length || incoming.rows.length),indexes:indexes.rows,foreignKeys:foreignKeys.rows};
@@ -186,6 +207,12 @@ export function postgresColumnStatement(input,definition) {
   const field=quote(name);
   const existing=definition?.columnChanges.find(([column])=>column===name);
   if (!existing) return null;
+  if (input.operation==='set-column-comment') return 'COMMENT ON COLUMN '+table+'.'+field+' IS '+
+    (input.comment===null?'NULL':columnLiteral(input.comment,true));
+  if (input.operation==='set-column-nullability') {
+    if (typeof input.nullable!=='boolean') throw new TypeError('Invalid nullability');
+    return 'ALTER TABLE '+table+' ALTER COLUMN '+field+(input.nullable?' DROP NOT NULL':' SET NOT NULL');
+  }
   if (input.operation==='set-column-default') return 'ALTER TABLE '+table+' ALTER COLUMN '+field+' '+columnDefault(input.defaultValue,true);
   if (input.operation==='rename-column') return 'ALTER TABLE '+table+' RENAME COLUMN '+field+' TO '+quote(input.name);
   if (input.operation!=='modify-column' || !postgresType(input.column.type) || typeof input.column.nullable!=='boolean') {
@@ -193,5 +220,9 @@ export function postgresColumnStatement(input,definition) {
   }
   if (!existing[1]) return null;
   const nullable=input.column.nullable?'DROP NOT NULL':'SET NOT NULL';
-  return 'ALTER TABLE '+table+' ALTER COLUMN '+field+' TYPE '+postgresType(input.column.type)+', ALTER COLUMN '+field+' '+nullable;
+  const collation=input.column.collation;
+  if (collation!==undefined && (typeof collation!=='string' || collation.split('.').length>2)) throw new TypeError('Invalid collation');
+  const collate=collation?' COLLATE '+collation.split('.').map(quote).join('.'):'';
+  return 'ALTER TABLE '+table+' ALTER COLUMN '+field+' TYPE '+postgresType(input.column.type)+collate+
+    ', ALTER COLUMN '+field+' '+nullable;
 }

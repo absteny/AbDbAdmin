@@ -626,7 +626,7 @@ async function api(req, res, url, event) {
         }
         if (method==='POST') {
           const input=await body(req);
-          requireValue(['rename-column','modify-column','set-column-default'].includes(input.operation) &&
+          requireValue(['rename-column','modify-column','set-column-default','set-column-comment','set-column-nullability'].includes(input.operation) &&
             [input.schema,input.table].every(value=>typeof value==='string' && value.length>0 && value.length<=63));
           return remote(profile,async db=>{
             const definition=await postgresTableDefinition(db,input.schema,input.table);

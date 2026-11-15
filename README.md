@@ -117,7 +117,11 @@ On the row screen, the heading identifies the selected table. Import and
 export controls are grouped above the rows. Each column header shows its type,
 nullability, and primary-key status. Expand **Column properties** for details
 such as its default and collation. Administrators can use the pencil to
-rename a column or change an eligible column's type and nullability.
+review all column properties, rename a column, edit a default value, or
+change an eligible column's type, nullability, and collation. Depending on
+the engine, the editor also supports comments, character sets, and
+auto-increment controls. Use **Advanced SQL editing** from the pencil
+for native definitions such as generated columns or custom expressions.
 Double-click an editable row, or use **Edit**, to open its editor.
 Both editors require a review before applying changes.
 
@@ -128,7 +132,7 @@ The row grid loads the next 50 rows as you scroll down. **Load more** is
 available for manual loading or retry. Offset-based browsing can shift
 when rows change while you are scrolling.
 
-### Filter rows and save a view
+### Filter and sort rows
 
 Open a table and use **Filters and sorting** above the rows. Add up to eight conditions
 joined with AND. **Contains** searches within the text representation of a
@@ -136,11 +140,9 @@ value and treats percent signs and underscores literally. **Equals** compares
 text using the database's comparison rules. You can also filter by NULL and
 choose a sort column. CSV exports use the active filters, sort, and offset.
 
-Open **Saved views**, enter a name, and save the current filters and sort.
-Views belong to your account and the selected connection and table. Saving
-the same name replaces the existing view. Filter values travel as URL query
-parameters when loading rows or downloading CSV. Avoid logging query strings
-at your reverse proxy if filters may contain sensitive values.
+Filter values travel as query parameters when loading rows or downloading
+CSV. Configure your reverse proxy to omit query strings from logs if
+filters may contain sensitive values.
 
 ### Edit a MySQL or MariaDB schema
 
@@ -331,27 +333,52 @@ To stop the companion without stopping AbDbAdmin:
 docker compose --profile advanced stop phpmyadmin
 ```
 
-## 3. Optional remote access
+## 3. Start on a Linux server
 
-Skip this section if you want the application on `127.0.0.1` only.
-
-**For a server you manage over SSH**, start the app on the server using
-`sh install.sh --local`. From your own computer, forward the port:
+Install Git, Docker Engine 28 or newer, and Docker Compose V2 on the server.
+Sign in over SSH as a user who can run Docker. Run these commands on the
+server:
 
 ```sh
-ssh -N -L 8099:127.0.0.1:8099 user@server
+git --version &&
+docker version &&
+docker compose version &&
+cd "$HOME" &&
+git clone https://github.com/absteny/AbDbAdmin.git &&
+cd AbDbAdmin &&
+sh install.sh --local
 ```
 
-Open [http://127.0.0.1:8099](http://127.0.0.1:8099) on your computer.
+The installer builds and starts the container and prints the initial panel
+credentials. From your own computer, replace `user@server` with your SSH
+login and keep this terminal open:
 
-**For a team using a domain**, copy `.env.example` to `.env`. Set
-`ABDB_DOMAIN` to your DNS name and `COOKIE_SECURE=1`. Leave `ABDB_BIND`
-set to `127.0.0.1`, start with `sh install.sh` (without `--local`), and
-configure an HTTPS reverse proxy on the Docker host. Replace `db.example.com`
-in [Caddyfile.example](Caddyfile.example) with your domain. Point DNS at the
-server and open the ports required by your proxy. The example redirects
-`http://{domain}:8080` to `https://{domain}`. Enter credentials on the HTTPS
-address. Basic Auth credentials can be intercepted over plain HTTP.
+```sh
+ssh -N -L 127.0.0.1:8099:127.0.0.1:8099 user@server
+```
+
+Open [http://127.0.0.1:8099](http://127.0.0.1:8099) on your computer. If port
+8099 is already in use on your computer, replace the first 8099 in the SSH
+command with 8109 and open [http://127.0.0.1:8109](http://127.0.0.1:8109).
+
+### Serve the panel on a domain over HTTPS
+
+Point your domain at the server and configure an HTTPS reverse proxy on the
+Docker host. [Caddyfile.example](Caddyfile.example) contains a configuration
+for Caddy. Replace `db.example.com` in both entries and enable that
+configuration. With the same checkout, run the following on the server:
+
+```sh
+cd "$HOME/AbDbAdmin" &&
+ABDB_BIND=127.0.0.1 ABDB_LOCAL_ONLY=0 ABDB_PORT=8099 \
+  ABDB_DOMAIN=db.example.com COOKIE_SECURE=1 sh install.sh
+```
+
+Replace `db.example.com` with your domain each time you run the command, or
+store these settings in `.env`. Open `https://db.example.com`. Use the
+gateway credentials for Basic Auth, then the panel credentials to sign in.
+The example also redirects HTTP on port 8080 to HTTPS when that port is
+reachable.
 
 If you deliberately publish the port on a private network interface,
 set `ABDB_BIND` to that interface, restrict it with a firewall, and use
