@@ -191,6 +191,23 @@ creation statement for a routine, trigger, or event. **Open in SQL scripts**
 copies the statement into an editable draft. Running it still requires a
 review and confirmation.
 
+### Manage MySQL and MariaDB accounts
+
+As an AbDbAdmin administrator, select a MySQL or MariaDB connection and open
+**Database users**. The editor lists server accounts and direct grants on
+the selected database. It supports account creation, password rotation, drop,
+and granting or revoking the listed privileges. Review and confirm every
+change. Passwords are excluded from previews and the AbDbAdmin audit log.
+Account creation and deletion affect the database server. The grant and
+revoke controls apply to the saved database, and reject database names
+containing wildcard characters or a backslash.
+
+The saved database account needs permission to read the relevant columns of
+`mysql.user` and `mysql.db`, and sufficient privileges for each requested
+operation. The grant list excludes inherited roles, global grants, and
+table-level grants. The editor prevents deleting or changing the password
+of the account used by the current connection.
+
 ### Review row changes
 
 Use **Review changes** after editing or inserting a row. Deleting from the

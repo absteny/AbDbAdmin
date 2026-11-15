@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
-import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, serverOverview, objectDefinition } from './native-tools.mjs';
+import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes } from './schema-editor.mjs';
 import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
@@ -544,6 +544,33 @@ async function api(req, res, url, event) {
         const quote=name=>identifier(false,name);
         event.action='table.maintenance';
         return remote(profile,async db=>(await db.script(operation+' TABLE '+quote(profile.database)+'.'+quote(table),row=>row.map(limitText))).sets[0]);
+      }
+      if (action==='database-accounts') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        if (method==='GET') {
+          const data=await remote(profile,db=>databaseAccounts(db,profile.database));
+          return {...data,database:profile.database,privileges:databasePrivileges};
+        }
+        if (method==='POST') {
+          const input=await body(req);
+          const operation=databaseAccountInput(input);
+          requireValue(operation,'Неверные данные учётной записи БД');
+          requireValue(!['grant','revoke'].includes(operation.operation) || !/[%_\\]/.test(profile.database),
+            'Имя базы с символами шаблона не поддерживается редактором прав');
+          const signature=expires=>createHmac('sha256',key).update(JSON.stringify(
+            ['db-account',user.id,record.id,record.secret,expires,operation])).digest('hex');
+          if (input.confirmation===undefined) {
+            const expires=Date.now()+300000;
+            return {database:profile.database,confirmation:expires+'.'+signature(expires)};
+          }
+          const expires=Number(String(input.confirmation).split('.')[0]);
+          requireValue(Number.isSafeInteger(expires) && expires>=Date.now() && expires<=Date.now()+300000 &&
+            input.confirmation===expires+'.'+signature(expires),'Сначала откройте предпросмотр изменений',409);
+          event.action='db-account.'+operation.operation;
+          const applied=await remote(profile,db=>applyDatabaseAccount(db,profile.database,operation,record.engine));
+          requireValue(applied,'Нельзя удалить или сменить пароль учётной записи текущего подключения',409);
+          return {};
+        }
       }
       if (action==='server-status' && method==='GET') {
         requireValue(user.admin && mysql,'Требуются права администратора',403);

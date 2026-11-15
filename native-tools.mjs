@@ -128,3 +128,62 @@ export async function objectDefinition(db,database,kind,name) {
   const sql=column>=0?result.rows[0]?.[column]:null;
   return typeof sql==='string'?sql:Buffer.isBuffer(sql)?sql.toString('utf8'):null;
 }
+
+export const databasePrivileges = [
+  'SELECT','INSERT','UPDATE','DELETE','CREATE','ALTER','DROP','INDEX','REFERENCES',
+  'CREATE VIEW','SHOW VIEW','CREATE ROUTINE','ALTER ROUTINE','EXECUTE','TRIGGER','EVENT',
+];
+
+function accountLiteral(value) {
+  // These statements run on a dedicated connection in NO_BACKSLASH_ESCAPES mode.
+  return "'"+value.replaceAll("'","''")+"'";
+}
+
+export function databaseAccountInput(input) {
+  const {operation,user,host,password,privileges}=input;
+  if (!['create','password','drop','grant','revoke'].includes(operation) ||
+      typeof user!=='string' || !/^[a-z0-9_.-]{1,32}$/i.test(user) ||
+      typeof host!=='string' || host.length>253 || !/^[a-z0-9.:%_-]+$/i.test(host)) return null;
+  if (['create','password'].includes(operation) &&
+      (typeof password!=='string' || password.length<12 || password.length>255 || /[\u0000-\u001f\u007f]/.test(password))) return null;
+  if (['grant','revoke'].includes(operation) &&
+      (!Array.isArray(privileges) || !privileges.length || !privileges.every(value=>databasePrivileges.includes(value)))) return null;
+  return {operation,user,host,
+    ...(operation==='create' || operation==='password'?{password}:{}),
+    ...(operation==='grant' || operation==='revoke'?{privileges:[...new Set(privileges)]}:{})};
+}
+
+export async function databaseAccounts(db,database) {
+  const accounts=await db.query('SELECT User,Host FROM mysql.user ORDER BY User,Host LIMIT 501');
+  const privilegeColumns=['Select_priv','Insert_priv','Update_priv','Delete_priv','Create_priv','Alter_priv',
+    'Drop_priv','Index_priv','References_priv','Create_view_priv','Show_view_priv','Create_routine_priv',
+    'Alter_routine_priv','Execute_priv','Trigger_priv','Event_priv'];
+  const grants=await db.query('SELECT User,Host,'+privilegeColumns.join(',')+' FROM mysql.db WHERE Db=? ORDER BY User,Host LIMIT 501',[database]);
+  const current=await db.query('SELECT CURRENT_USER()');
+  const direct=grants.rows.slice(0,500).flatMap(([user,host,...flags])=>
+    databasePrivileges.flatMap((privilege,index)=>flags[index]==='Y'?[[user+'@'+host,privilege]]:[]));
+  return {accounts:accounts.rows.slice(0,500),grants:direct,current:current.rows[0][0],
+    truncated:accounts.rows.length>500 || grants.rows.length>500};
+}
+
+export async function applyDatabaseAccount(db,database,input,engine) {
+  const account=accountLiteral(input.user)+'@'+accountLiteral(input.host);
+  if (['drop','password'].includes(input.operation)) {
+    const current=await db.query('SELECT CURRENT_USER()');
+    const active=current.rows[0][0];
+    const at=active.lastIndexOf('@');
+    if (active.slice(0,at)===input.user && active.slice(at+1).toLowerCase()===input.host.toLowerCase()) return false;
+  }
+  const scope=identifier(false,database)+'.*';
+  const commands={
+    create:()=> 'CREATE USER '+account+' IDENTIFIED BY '+accountLiteral(input.password),
+    password:()=> 'ALTER USER '+account+' IDENTIFIED BY '+accountLiteral(input.password),
+    drop:()=> 'DROP USER '+account,
+    grant:()=> 'GRANT '+input.privileges.join(', ')+' ON '+scope+' TO '+account,
+    revoke:()=> 'REVOKE '+input.privileges.join(', ')+' ON '+scope+' FROM '+account,
+  };
+  const modes=engine==='mariadb'?'NO_BACKSLASH_ESCAPES,NO_AUTO_CREATE_USER':'NO_BACKSLASH_ESCAPES';
+  await db.script("SET SESSION sql_mode = '"+modes+"'",row=>row);
+  await db.script(commands[input.operation](),row=>row);
+  return true;
+}

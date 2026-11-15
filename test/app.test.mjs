@@ -180,6 +180,34 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       const results=await request(conn+'/database-search','POST',{text:'needle'},admin);
       assert.ok(results.body.results.some(result=>result.table==='clay_parent' && result.rows[0][0]==='Needle, with "quotes"'));
       await withDatabase(profile,db=>db.query('DELETE FROM clay_parent WHERE id=803'));
+      if (process.env.TEST_ACCOUNT_ADMIN==='1') {
+        const path=conn+'/database-accounts';
+        const account={user:'clay_account_test',host:'127.0.0.1'};
+        const secret="sample-'\\-password";
+        const change=async input=>{
+          const {body:preview}=await request(path,'POST',input,admin);
+          assert.equal(JSON.stringify(preview).includes(secret),false);
+          await request(path,'POST',{...input,confirmation:preview.confirmation},admin);
+        };
+        await withDatabase(profile,db=>db.script("DROP USER IF EXISTS 'clay_account_test'@'127.0.0.1'",row=>row));
+        try {
+          await request(path,'POST',{operation:'create',...account,password:secret,confirmation:'invalid'},admin,409);
+          await change({operation:'create',...account,password:secret});
+          await change({operation:'grant',...account,privileges:['SELECT']});
+          const {body:accounts}=await request(path,'GET',undefined,admin);
+          assert.ok(accounts.accounts.some(([user,host])=>user===account.user && host===account.host));
+          assert.ok(accounts.grants.some(([name,privilege])=>name.includes(account.user) && privilege==='SELECT'));
+          assert.deepEqual((await withDatabase({...profile,user:account.user,password:secret},db=>db.query('SELECT id FROM clay_parent WHERE id=1'))).rows,[[1]]);
+          await change({operation:'password',...account,password:secret+'-changed'});
+          const updated={...profile,user:account.user,password:secret+'-changed'};
+          assert.deepEqual((await withDatabase(updated,db=>db.query('SELECT id FROM clay_parent WHERE id=1'))).rows,[[1]]);
+          await change({operation:'revoke',...account,privileges:['SELECT']});
+          await assert.rejects(withDatabase(updated,db=>db.query('SELECT id FROM clay_parent')));
+          await change({operation:'drop',...account});
+        } finally {
+          await withDatabase(profile,db=>db.script("DROP USER IF EXISTS 'clay_account_test'@'127.0.0.1'",row=>row));
+        }
+      }
       const overview=await request(conn+'/server-status','GET',undefined,admin);
       assert.ok(overview.body.status.some(([name])=>name.toLowerCase()==='uptime'));
       assert.ok(overview.body.grants.length);

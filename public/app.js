@@ -112,7 +112,7 @@ function select(name, entries, value, attrs={}) {
   return result;
 }
 const utilityRoutes=new Set(['users','audit','demo']);
-const databaseRoutes=new Set(['structure','tables','graph','sql','database-search','sql-script','database-objects','schema-editor','server-status']);
+const databaseRoutes=new Set(['structure','tables','graph','sql','database-search','sql-script','database-objects','schema-editor','server-status','database-accounts']);
 let pendingTable=null;
 let scriptDraft=null;
 let appliedHash=null;
@@ -122,7 +122,7 @@ function allowedView(view,connection) {
   if (!databaseRoutes.has(view) || !connection) return false;
   if (view==='sql') return connection.engine!=='demo' && ['admin','sql'].includes(connection.level);
   if (view==='database-search') return ['mysql','mariadb'].includes(connection.engine);
-  if (['sql-script','database-objects','schema-editor','server-status'].includes(view)) {
+  if (['sql-script','database-objects','schema-editor','server-status','database-accounts'].includes(view)) {
     return state.user.admin && ['mysql','mariadb'].includes(connection.engine);
   }
   return true;
@@ -233,6 +233,7 @@ function render() {
         .map(([key,title])=>button(title,()=>setView(key),null,{'aria-current':String(state.view===key)})),
       mysqlWorkspace?button(t('Поиск по базе'),()=>setView('database-search'),null,{'aria-current':String(state.view==='database-search')}):null,
       admin && mysqlWorkspace?button(t('SQL-скрипты'),()=>setView('sql-script'),null,{'aria-current':String(state.view==='sql-script')}):null,
+      admin && mysqlWorkspace?button(t('Пользователи СУБД'),()=>setView('database-accounts'),null,{'aria-current':String(state.view==='database-accounts')}):null,
       admin && mysqlWorkspace?button(t('Состояние сервера'),()=>setView('server-status'),null,{'aria-current':String(state.view==='server-status')}):null,
       admin && mysqlWorkspace?button(t('Объекты БД'),()=>setView('database-objects'),null,{'aria-current':String(state.view==='database-objects')}):null,
       admin && mysqlWorkspace?button(t('Редактор структуры'),()=>setView('schema-editor'),null,{'aria-current':String(state.view==='schema-editor')}):null,
@@ -250,6 +251,7 @@ function render() {
   if (state.view === 'sql') return sqlView(content);
   if (state.view==='sql-script' && mysqlWorkspace && admin) return scriptsView(content,stamp);
   if (state.view==='database-search' && mysqlWorkspace) return databaseSearchView(content,stamp);
+  if (state.view==='database-accounts' && mysqlWorkspace && admin) return databaseAccountsView(content,stamp).catch(error=>showError(content,stamp,error));
   if (state.view==='server-status' && mysqlWorkspace && admin) return serverStatusView(content,stamp).catch(error=>showError(content,stamp,error));
   if (state.view==='database-objects' && mysqlWorkspace && admin) return databaseObjectsView(content,stamp).catch(error=>showError(content,stamp,error));
   if (state.view === 'schema-editor' && admin && mysqlWorkspace) return schemaEditor(content,stamp).catch(error=>showError(content,stamp,error));
@@ -366,6 +368,8 @@ const auditActions = {
   'connection.create':'Создание подключения','connection.update':'Изменение подключения','connection.delete':'Удаление подключения',
   'sql.execute':'Выполнение SQL','row.write':'Операция со строкой','row.insert':'Добавление строки',
   'row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры','csv.import':'Импорт CSV','sql.script':'Выполнение SQL-скрипта','sql.export':'Экспорт SQL','table.maintenance':'Обслуживание таблицы',
+  'db-account.create':'Создание пользователя СУБД','db-account.password':'Смена пароля пользователя СУБД',
+  'db-account.drop':'Удаление пользователя СУБД','db-account.grant':'Выдача прав СУБД','db-account.revoke':'Отзыв прав СУБД',
 };
 
 async function auditView(target,stamp,before=null) {
@@ -483,6 +487,61 @@ function databaseSearchView(target,stamp) {
       async ({text})=>search(text,0))),output);
 }
 
+async function databaseAccountsView(target,stamp) {
+  const path=route('database-accounts');
+  const connection=state.connection;
+  target.append(e('p',{},t('Загрузка…')));
+  const data=await api(path);
+  if (stamp!==renderId) return;
+  const actions={create:'Создать пользователя СУБД',password:'Сменить пароль',drop:'Удалить пользователя СУБД',
+    grant:'Выдать права',revoke:'Отозвать права'};
+
+  function edit(operation,account=[]) {
+    const [username='',host='']=account;
+    const needsPassword=operation==='password' || operation==='create';
+    const needsPrivileges=operation==='grant' || operation==='revoke';
+    const checklist=div('fields');
+    if (needsPrivileges) checklist.append(...data.privileges.map(value=>e('label',{class:'check'},
+      field('privilege','checkbox',value),value)));
+    const title=t(actions[operation]);
+    const editor=form([
+      div('fields',label(t('Пользователь БД'),field('user','text',username,{required:true,maxlength:32,readonly:!!username})),
+        label(t('Хост'),field('host','text',host,{required:true,maxlength:253,readonly:!!host}))),
+      needsPassword?label(t('Новый пароль'),field('password','password','',{required:true,minlength:12,maxlength:255,autocomplete:'new-password'})):null,
+      checklist,
+    ],t('Предпросмотр изменений'),async (values,element)=>{
+      const input={operation,user:values.user,host:values.host};
+      if (needsPassword) input.password=values.password;
+      if (needsPrivileges) input.privileges=new FormData(element).getAll('privilege');
+      const preview=await api(path,'POST',input);
+      openDialog(t('Предпросмотр изменений'),form([
+        e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name),
+        e('p',{},title+' · '+input.user+'@'+input.host),
+        needsPrivileges?e('p',{},preview.database+' · '+input.privileges.join(', ')):null,
+        operation==='drop'?e('p',{},t('Удаление учётной записи влияет на весь сервер БД.')):null,
+      ],t('Подтвердить'),async ()=>{
+        await api(path,'POST',{...input,confirmation:preview.confirmation});
+        dialog.close();
+        render();
+      },button(t('Назад'),()=>openDialog(title,editor))));
+    });
+    openDialog(title,editor);
+  }
+
+  target.replaceChildren(div('panel stack',
+    div('row spread',e('h2',{},t('Пользователи СУБД')),button(t(actions.create),()=>edit('create'),'primary')),
+    data.accounts.length?resultTable({columns:[t('Пользователь БД'),t('Хост')],rows:data.accounts},row=>{
+      const own=row.join('@')===data.current;
+      return div('row',
+        button(t(actions.grant),()=>edit('grant',row)),
+        button(t(actions.revoke),()=>edit('revoke',row)),
+        own?null:button(t(actions.password),()=>edit('password',row)),
+        own?null:button(t('Удалить'),()=>edit('drop',row),'danger'));
+    }):e('p',{},t('Объекты не найдены.')),
+    data.truncated?e('small',{},t('Результат сокращён.')):null),
+    div('panel stack',e('h2',{},t('Права на базу')+' · '+data.database),
+      data.grants.length?resultTable({columns:[t('Пользователь БД'),t('Право')],rows:data.grants}):e('p',{},t('Объекты не найдены.'))));
+}
 async function serverStatusView(target,stamp) {
   target.replaceChildren(e('p',{},t('Загрузка…')));
   const data=await api(route('server-status'));
