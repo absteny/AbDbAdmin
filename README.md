@@ -108,30 +108,35 @@ from the Docker host on the database side.
 
 ### Connect to MySQL or MariaDB through SSH
 
-1. Select **MySQL** or **MariaDB**, then enable **Connect through SSH**.
+1. Select **Through SSH** at the top of the connection form, then choose
+   **MySQL** or **MariaDB**.
 2. Enter the SSH server address, port (usually `22`), and SSH username.
-3. Enter the SSH server's trusted `SHA256:…` host-key fingerprint. Ask the
-   server administrator for it or read it from a trusted server console.
-   For example, on a server with an Ed25519 host key, run
-   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Copy the fingerprint
-   starting with `SHA256:`. You can also choose **Fetch fingerprint** in
-   AbDbAdmin. Compare the result with the trusted fingerprint before selecting
-   **Use verified fingerprint**.
-4. Choose a private key file from your computer or paste its contents.
-   Enter the key passphrase if it is encrypted. The corresponding public
-   key needs to be authorized for the SSH user.
-5. Enter the database host and port as seen **from the SSH server**. If the
-   database runs on that host and listens on loopback, use `127.0.0.1:3306`.
-   Enter your database username and password separately.
-6. Choose **Test connection**, then **Test and save**. If MySQL uses TLS,
-   keep certificate verification enabled and use a database host name that
-   matches its certificate.
+3. Choose a private key file or paste its contents. Enter its passphrase
+   if it is encrypted. Authorize the corresponding public key on the SSH server.
+4. Enter the database host and port as seen from the SSH server. If the
+   database runs on the same server and listens on loopback, use
+   `127.0.0.1:3306`. Enter your database username and password separately.
+5. Choose **Test and save**. Keep TLS verification enabled if your database
+   uses TLS and enter a database host name that matches its certificate.
 
-The SSH server must allow TCP forwarding to the database. AbDbAdmin creates
-the tunnel inside the application and verifies the configured host-key
-fingerprint before authenticating. The private key and passphrase are stored
-encrypted with the connection profile. Leave the key field blank when editing
-to keep the saved key. Remove or replace the passphrase explicitly when needed.
+The SSH server must allow TCP forwarding to the database. AbDbAdmin selects
+a trusted SSH host key automatically. Existing SSH connections can reuse their
+previously verified fingerprints. For new SSH servers, configure the trusted
+fingerprints once in the AbDbAdmin server's `.env`. Use the exact SSH host and
+port from the form. For IPv6, use `[address]:port` as the key.
+
+```dotenv
+ABDB_SSH_HOST_KEYS='{"ssh.example.net:22":"SHA256:REPLACE_WITH_THE_VERIFIED_FINGERPRINT"}'
+```
+
+Get the fingerprint from the SSH administrator or a trusted SSH-server
+console. For an Ed25519 host key, run
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on that server. Restart
+AbDbAdmin with the same installer command you normally use to apply the
+configuration. After an authorized key rotation, update the trusted value
+and restart again, then test and save the connection to update its stored
+fingerprint. SSH private keys and passphrases remain encrypted in
+saved profiles.
 
 ### Browse a database
 

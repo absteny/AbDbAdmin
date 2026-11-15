@@ -66,7 +66,6 @@ function requestTitle(path,method) {
   if (endpoint==='schema' || endpoint==='structure-editor' && method==='GET') return 'Загрузка структуры…';
   if (endpoint==='rows' && method==='GET') return 'Загружаем строки…';
   if (endpoint==='sql' || endpoint==='sql-script') return 'Обрабатываем SQL…';
-  if (endpoint==='ssh-fingerprint') return 'Получаем отпечаток SSH…';
   if (endpoint==='connection-test') return 'Проверяем подключение…';
   if (method!=='GET') return 'Выполняем запрос…';
   return 'Загрузка…';
@@ -337,24 +336,22 @@ function editConnection(config={}, id=null) {
   engine.addEventListener('change',()=>{port.value=engine.value==='postgres'?5432:3306;});
   const targetHost=field('host','text',config.host,{required:true,placeholder:'db.example.net'});
   const savedSsh=config.ssh;
-  const sshToggle=field(undefined,'checkbox','1',{checked:Boolean(savedSsh)});
-  const sshToggleLabel=e('label',{class:'check wide'},sshToggle,t('Подключаться через SSH'));
+  let useSsh=Boolean(savedSsh);
+  const modeButton=(title,description,ssh)=>e('button',{type:'button',class:'connection-mode',
+    'aria-pressed':String(useSsh===ssh),onclick:()=>{
+      useSsh=ssh;
+      if (ssh && engine.value==='postgres') {
+        engine.value='mysql';
+        port.value=3306;
+      }
+      syncSsh();
+    }},e('strong',{},t(title)),e('small',{},t(description)));
+  const directMode=modeButton('Прямое подключение','Подключение к адресу базы данных',false);
+  const sshMode=modeButton('Через SSH','Подключение к MySQL или MariaDB через SSH-сервер',true);
+  const modes=e('div',{class:'connection-modes wide',role:'group','aria-label':t('Способ подключения')},directMode,sshMode);
   const sshHost=field(undefined,'text',savedSsh?.host ?? '',{required:true,maxlength:255,placeholder:'ssh.example.net'});
   const sshPort=field(undefined,'number',savedSsh?.port ?? 22,{required:true,min:1,max:65535});
   const sshUser=field(undefined,'text',savedSsh?.user ?? '',{required:true,maxlength:128});
-  const fingerprint=field(undefined,'text',savedSsh?.fingerprint ?? '',{required:true,maxlength:50,placeholder:'SHA256:…'});
-  const observedFingerprint=div('stack wide');
-  function clearObservedFingerprint() {observedFingerprint.replaceChildren();}
-  for (const control of [sshHost,sshPort]) control.addEventListener('input',clearObservedFingerprint);
-  const lookup=button(t('Получить отпечаток'),click(async()=>{
-    if (!sshHost.reportValidity() || !sshPort.reportValidity()) return;
-    const host=sshHost.value.trim(),port=Number(sshPort.value);
-    const {fingerprint:observed}=await api('ssh-fingerprint','POST',{host,port});
-    if (!observedFingerprint.isConnected || sshHost.value.trim()!==host || Number(sshPort.value)!==port) return;
-    observedFingerprint.replaceChildren(e('code',{},observed),
-      e('small',{},t('Сверьте отпечаток с данными администратора или с консолью SSH-сервера.')),
-      button(t('Использовать проверенный отпечаток'),()=>{fingerprint.value=observed;clearObservedFingerprint();}));
-  }));
   const keyFile=field(undefined,'file');
   const keyText=e('textarea',{maxlength:32768,autocomplete:'off',spellcheck:'false',
     placeholder:savedSsh?.hasKey?t('Сохранённый SSH-ключ'):null});
@@ -392,21 +389,20 @@ function editConnection(config={}, id=null) {
   const sshFields=e('fieldset',{class:'wide catalog-filter ssh-fields'},
     e('legend',{},'SSH'),
     div('fields',label(t('Хост SSH'),sshHost),label(t('Порт SSH'),sshPort),label(t('Пользователь SSH'),sshUser),
-      label(t('Отпечаток ключа SSH-сервера'),fingerprint),
-      div('row wide',lookup,e('small',{},t('Укажите SHA256-отпечаток, полученный у администратора SSH-сервера.'))),
-      observedFingerprint,
       label(t('Загрузить файл приватного ключа'),keyFile,'wide'),keyStatus,
       label(t('Или вставить приватный SSH-ключ'),keyText,'wide'),
       label(t('Парольная фраза SSH-ключа'),passphrase,'wide'),
       savedSsh?.hasPassphrase?e('label',{class:'check wide'},clearPassphrase,t('Удалить сохранённую парольную фразу')):null,
       e('small',{class:'wide'},t('Хост и порт базы указываются так, как их видит SSH-сервер. Если MySQL работает на нём, обычно это 127.0.0.1:3306.'))));
   function syncSsh() {
-    sshToggleLabel.hidden=engine.value==='postgres';
-    sshFields.disabled=sshFields.hidden=sshToggleLabel.hidden || !sshToggle.checked;
-    targetHost.placeholder=sshFields.disabled?'db.example.net':'127.0.0.1';
+    directMode.setAttribute('aria-pressed',String(!useSsh));
+    sshMode.setAttribute('aria-pressed',String(useSsh));
+    const postgres=engine.querySelector('[value=postgres]');
+    postgres.hidden=postgres.disabled=useSsh;
+    sshFields.disabled=sshFields.hidden=!useSsh;
+    targetHost.placeholder=useSsh?'127.0.0.1':'db.example.net';
   }
   engine.addEventListener('change',syncSsh);
-  sshToggle.addEventListener('change',syncSsh);
   syncSsh();
   const observed=e('strong',{},t('Пока неизвестен'));
   const status=e('small',{role:'status'});
@@ -418,15 +414,16 @@ function editConnection(config={}, id=null) {
     status,
   );
   const content = form(div('fields',
-    network,
+    modes,
     label(t('Название'),field('name','text',config.name,{required:true,maxlength:255}),'wide'),
-    label(t('СУБД'),engine),
+    label(t('СУБД'),engine),sshFields,
+    e('strong',{class:'wide'},t('Настройки базы данных')),
     label(t('Порт'),port),
     label(t('Хост'),targetHost),
     label(t('База данных'),field('database','text',config.database,{required:true})),
     label(t('Пользователь БД'),field('user','text',config.user,{required:true})),
     label(t('Пароль БД'),field('password','password','',{autocomplete:'new-password',placeholder:id?t('Сохранённый пароль'):''})),
-    sshToggleLabel,sshFields,
+    network,
     e('label',{class:'check wide'},field('tls','checkbox','1',{checked:config.tls ?? true}),t('TLS с проверкой сертификата')),
     label(config.customCa?t('Новый PEM-сертификат CA (текущий сохранён)'):t('PEM-сертификат CA (необязательно)'),e('textarea',{name:'ca'}),'wide'),
     config.customCa?e('label',{class:'check wide'},field('removeCa','checkbox','1'),t('Удалить сохранённый сертификат CA')):null,
@@ -443,7 +440,7 @@ function editConnection(config={}, id=null) {
       const privateKey=keyText.value.trim();
       if (!privateKey && !savedSsh?.hasKey) throw new Error(t('Выберите файл или вставьте приватный SSH-ключ.'));
       data.ssh={host:sshHost.value.trim(),port:Number(sshPort.value),user:sshUser.value.trim(),
-        fingerprint:fingerprint.value.trim(),...(privateKey?{privateKey}:{}),
+        ...(privateKey?{privateKey}:{}),
         ...(passphrase.value || clearPassphrase.checked?{passphrase:clearPassphrase.checked?'':passphrase.value}:{})};
     }
     if (id && !data.password && !data.resetPassword) delete data.password;

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { get } from 'node:http';
-import { createHash } from 'node:crypto';
 import { connect } from 'node:net';
 import ssh2 from 'ssh2';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -13,7 +13,11 @@ import { withDatabase } from '../database.mjs';
 
 for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remote Basic Auth and rotation', {timeout:90000}, async t=>{
   const directory = await mkdtemp(join(tmpdir(),'claydb-test-'));
-  const server = spawn(process.execPath,['server.mjs'],{env:{...process.env,DATA_DIR:directory,PORT:'0',BIND_HOST:'127.0.0.1',COOKIE_SECURE:'0',ABDB_LOCAL_ONLY:local?'1':'0'}});
+  const sshPort=Number(process.env.TEST_DB_PORT)+1000;
+  const hostKey=local && ['mysql','mariadb'].includes(process.env.TEST_DB_ENGINE)?ssh2.utils.generateKeyPairSync('ed25519').private:null;
+  const pins=hostKey?{['127.0.0.1:'+sshPort]:'SHA256:'+createHash('sha256')
+    .update(ssh2.utils.parseKey(hostKey).getPublicSSH()).digest('base64').replace(/=$/,'')}:null;
+  const server = spawn(process.execPath,['server.mjs'],{env:{...process.env,DATA_DIR:directory,PORT:'0',BIND_HOST:'127.0.0.1',COOKIE_SECURE:'0',ABDB_LOCAL_ONLY:local?'1':'0',ABDB_SSH_HOST_KEYS:JSON.stringify(pins ?? {})}});
   t.after(async ()=>{
     if (server.exitCode==null && server.signalCode==null) {
       const exited = once(server,'exit');
@@ -194,13 +198,11 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
         assert.equal(live[1],profile.user);
       } finally {await running;}
       const {Server,utils}=ssh2;
-      const hostKey=utils.generateKeyPairSync('ed25519').private;
       const passphrase='test-passphrase';
       const keypair=utils.generateKeyPairSync('ed25519',{passphrase,cipher:'aes256-ctr'});
-      const fingerprint='SHA256:'+createHash('sha256').update(utils.parseKey(hostKey).getPublicSSH()).digest('base64').replace(/=$/,'');
       const expected=utils.parseKey(keypair.public).getPublicSSH();
       const clients=new Set();
-      const proxy=new Server({hostKeys:[hostKey]},client=>{
+      const startProxy=key=>new Server({hostKeys:[key]},client=>{
         clients.add(client);
         client.on('error',()=>{});
         client.on('close',()=>clients.delete(client));
@@ -221,24 +223,21 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
           channel.pipe(stream).pipe(channel);
         });
       });
-      proxy.listen(0,'127.0.0.1');
+      let proxy=startProxy(hostKey);
+      proxy.listen(sshPort,'127.0.0.1');
       await once(proxy,'listening');
       try {
-        const ssh={host:'127.0.0.1',port:proxy.address().port,user:'tunnel-test',fingerprint,privateKey:keypair.private,passphrase};
+        const ssh={host:'127.0.0.1',port:proxy.address().port,user:'tunnel-test',privateKey:keypair.private,passphrase};
         const tunneled={...profile,name:'SSH test',ssh};
-        await request('ssh-fingerprint','POST',{host:ssh.host,port:ssh.port},reader,403);
-        assert.equal((await request('ssh-fingerprint','POST',{host:ssh.host,port:ssh.port},admin)).body.fingerprint,fingerprint);
-        const wrongFingerprint='SHA256:'+Buffer.alloc(32).toString('base64').replace(/=$/,'');
-        const wrong=await request('connection-test','POST',{...tunneled,ssh:{...ssh,fingerprint:wrongFingerprint}},admin,502);
-        assert.match(wrong.body.error,/host key/i);
-        await request('connection-test','POST',{...tunneled,ssh:{...ssh,fingerprint:''}},admin,400);
+        const untrusted=await request('connection-test','POST',{...tunneled,ssh:{...ssh,port:ssh.port+1}},admin,400);
+        assert.match(untrusted.body.error,/trusted key/i);
         const invalid=await request('connection-test','POST',{...tunneled,ssh:{...ssh,passphrase:'wrong'}},admin,502);
         assert.match(invalid.body.error,/passphrase/i);
         await request('connection-test','POST',tunneled,admin);
         const savedId=(await request('connections','POST',tunneled,admin)).body.id;
         const savedPath='connections/'+savedId;
         const settings=(await request(savedPath+'/settings','GET',undefined,admin)).body;
-        assert.equal(settings.ssh.fingerprint,fingerprint);
+        assert.ok(!Object.hasOwn(settings.ssh,'fingerprint'));
         assert.equal(settings.ssh.hasKey,true);
         assert.equal(settings.ssh.hasPassphrase,true);
         assert.ok(!Object.hasOwn(settings.ssh,'privateKey'));
@@ -249,6 +248,14 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
         const wal=await readFile(join(directory,'claydb.sqlite-wal'));
         assert.ok(!wal.includes(passphrase));
         assert.ok(!wal.includes('BEGIN OPENSSH PRIVATE KEY'));
+        // Reuse the same endpoint with a different SSH host key.
+        for (const client of clients) client.end();
+        await new Promise(resolve=>proxy.close(resolve));
+        proxy=startProxy(utils.generateKeyPairSync('ed25519').private);
+        proxy.listen(ssh.port,'127.0.0.1');
+        await once(proxy,'listening');
+        const changed=await request(savedPath+'/sql','POST',{sql:'SELECT 1'},admin,502);
+        assert.match(changed.body.error,/host key/i);
         await request(savedPath,'DELETE',undefined,admin);
       } finally {
         for (const client of clients) client.end();

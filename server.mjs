@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
 import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount, objectCommand } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes, tableEngines, postgresColumnTypes, postgresTableDefinition, postgresColumnStatement, postgresColumnEdit, mysqlTypeFamilies } from './schema-editor.mjs';
-import { withDatabase, getSshFingerprint, structure, relations, tableData, columns, identifier } from './database.mjs';
+import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
 
 process.umask(0o077);
 const dataDir = process.env.DATA_DIR || './data';
@@ -225,19 +225,34 @@ function validSshEndpoint(host,port) {
     (/^[a-z0-9_.-]+$/i.test(host) || isIP(host)===6) && Number.isInteger(port) && port>0 && port<=65535;
 }
 
+const sshHostKeys=(()=>{
+  const invalid=()=>new Error('ABDB_SSH_HOST_KEYS must be a JSON object of endpoint and SHA256 fingerprint pairs');
+  let entries;
+  try {entries=JSON.parse(process.env.ABDB_SSH_HOST_KEYS || '{}');}
+  catch {throw invalid();}
+  if (!entries || typeof entries!=='object' || Array.isArray(entries)) throw invalid();
+  const pairs=Object.entries(entries);
+  for (const [,fingerprint] of pairs) {
+    if (typeof fingerprint!=='string' || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint) ||
+        Buffer.from(fingerprint.slice(7),'base64').toString('base64').replace(/=$/,'')!==fingerprint.slice(7)) throw invalid();
+  }
+  return new Map(pairs.map(([address,fingerprint])=>[address.toLowerCase(),fingerprint]));
+})();
+
 function sshConfiguration(input,previous) {
   if (input===null || input===undefined) return input===null?null:previous ?? null;
   requireValue(typeof input==='object' && !Array.isArray(input),'Проверьте настройки SSH');
-  const {host,port,user,fingerprint}=input;
+  const {host,port,user}=input;
   const privateKey=input.privateKey ?? previous?.privateKey;
   const passphrase=input.passphrase ?? (input.privateKey===undefined?previous?.passphrase:undefined) ?? '';
-  const fingerprintBytes=typeof fingerprint==='string' && /^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)
-    ?Buffer.from(fingerprint.slice(7),'base64'):null;
   requireValue(validSshEndpoint(host,port) &&
     typeof user==='string' && /^[a-z0-9_.@-]{1,128}$/i.test(user) &&
-    fingerprintBytes && fingerprintBytes.toString('base64').replace(/=$/,'')===fingerprint.slice(7) &&
     typeof privateKey==='string' && privateKey.trim().length>0 && privateKey.length<=32768 &&
     typeof passphrase==='string' && passphrase.length<=4096,'Проверьте настройки SSH');
+  const sameEndpoint=previous?.host.toLowerCase()===host.toLowerCase() && previous.port===port;
+  const endpoint=(host.includes(':')?'['+host+']':host).toLowerCase()+':'+port;
+  const fingerprint=sshHostKeys.get(endpoint) ?? (sameEndpoint?previous.fingerprint:null);
+  requireValue(fingerprint,'Для этого SSH-сервера администратор AbDbAdmin должен настроить доверенный ключ.',400);
   return {host,port,user,fingerprint,privateKey:privateKey.trim(),passphrase};
 }
 
@@ -261,7 +276,7 @@ function access(user, id) {
 }
 function publicProfile({password,ca,ssh,...rest}) {
   return {...rest,production:true,customCa:Boolean(ca),ssh:ssh?{
-    host:ssh.host,port:ssh.port,user:ssh.user,fingerprint:ssh.fingerprint,
+    host:ssh.host,port:ssh.port,user:ssh.user,
     hasKey:Boolean(ssh.privateKey),hasPassphrase:Boolean(ssh.passphrase),
   }:null};
 }
@@ -563,18 +578,6 @@ async function api(req, res, url, event) {
   const user = session && database.prepare('SELECT u.id,u.name,u.admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>?').get(digest(session),Date.now());
   requireValue(user,'Войдите в панель',401);
   event.actor = user.name;
-  if (resource==='ssh-fingerprint' && method==='POST') {
-    requireValue(user.admin,'Требуются права администратора',403);
-    const {host,port}=await body(req);
-    requireValue(validSshEndpoint(host,port),'Проверьте настройки SSH');
-    requireValue(active<12,'Слишком много одновременных запросов',503);
-    active++;
-    try {return {fingerprint:await getSshFingerprint({host,port})};}
-    catch (error) {
-      throw new RequestError(502,error.code==='SSH_TIMEOUT'?'SSH-сервер или туннель не ответил вовремя.':
-        'Не удалось подключиться к SSH-серверу. Проверьте адрес и порт.');
-    } finally {active--;}
-  }
   if (resource === 'connection-test' && method === 'POST') {
     requireValue(user.admin,'Требуются права администратора',403);
     const input=await body(req);
