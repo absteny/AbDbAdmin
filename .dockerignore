@@ -1,0 +1,9 @@
+**
+!package.json
+!package-lock.json
+!server.mjs
+!database.mjs
+!public/
+!public/**
+!LICENSE
+!THIRD_PARTY_NOTICES.txt

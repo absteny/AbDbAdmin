@@ -1,0 +1,9 @@
+# Replace db.example.com with the DNS name of this instance.
+# Run Caddy on the Docker host when using the default loopback binding.
+db.example.com {
+	reverse_proxy 127.0.0.1:8099
+}
+
+http://db.example.com:8080 {
+	redir https://db.example.com{uri} 308
+}

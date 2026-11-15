@@ -1,0 +1,77 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: postgres
+            image: postgres:17
+            port: 5432
+            health: pg_isready -U clay
+          - engine: mysql
+            image: mysql:8.4
+            port: 3306
+            health: mysqladmin ping -h 127.0.0.1
+          - engine: mariadb
+            image: mariadb:11.8
+            port: 3306
+            health: healthcheck.sh --connect --innodb_initialized
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_USER: clay
+          POSTGRES_DB: clay
+          POSTGRES_PASSWORD: clay-db-test
+          MYSQL_USER: clay
+          MYSQL_DATABASE: clay
+          MYSQL_PASSWORD: clay-db-test
+          MYSQL_ROOT_PASSWORD: clay-db-test-root
+          MARIADB_USER: clay
+          MARIADB_DATABASE: clay
+          MARIADB_PASSWORD: clay-db-test
+          MARIADB_ROOT_PASSWORD: clay-db-test-root
+        ports:
+          - ${{ matrix.port }}:${{ matrix.port }}
+        options: >-
+          --health-cmd="${{ matrix.health }}"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=24
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm test
+        env:
+          TEST_DB_ENGINE: ${{ matrix.engine }}
+          TEST_DB_PORT: ${{ matrix.port }}
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up --build -d --wait
+      - run: |
+          curl --fail --silent http://127.0.0.1:8099/healthz
+          docker compose exec -T abdbadmin test -s /app/data/initial-admin.txt
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8099/)" = 401
+          credentials=$(docker compose exec -T abdbadmin node --disable-warning=ExperimentalWarning server.mjs show-access)
+          password=$(printf '%s\n' "$credentials" | sed -n '3s/^Пароль: //p')
+          test -n "$password"
+          curl --fail --silent --user "gateway:$password" http://127.0.0.1:8099/ --output /dev/null
+      - if: always()
+        run: docker compose down -v
