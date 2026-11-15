@@ -175,6 +175,8 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
       }
       const overview=await request(conn+'/server-status','GET',undefined,admin);
       assert.ok(overview.body.status.some(([name])=>name.toLowerCase()==='uptime'));
+      const metrics=(await request(conn+'/server-status?metrics=1','GET',undefined,admin)).body;
+      assert.deepEqual(Object.keys(metrics),['status']);
       assert.ok(overview.body.grants.length);
       const objectPath=conn+'/object-change';
       const event={kind:'EVENT',name:'clay_route_event'};
@@ -306,6 +308,20 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
       await change({operation:'modify-column',column:{name:'description',type:'VARCHAR(128)',nullable:true}});
       await change({operation:'rename-column',columnName:'description',name:'label'});
     }
+    const editor=conn+'/structure-editor';
+    const defaultInput={operation:'set-column-default',schema,table:'clay_parent',columnName:'label',
+      defaultValue:"sample ' value \\ slash"};
+    await request(editor,'POST',defaultInput,admin,409);
+    const {body:defaultPreview}=await request(editor,'POST',{...defaultInput,preview:true},admin);
+    await request(editor,'POST',{...defaultInput,confirmation:defaultPreview.confirmation},admin);
+    await withDatabase(profile,async db=>{
+      await db.query('INSERT INTO clay_parent(id) VALUES (92)');
+      assert.deepEqual((await db.query('SELECT label FROM clay_parent WHERE id=92')).rows,[[defaultInput.defaultValue]]);
+      await db.query('DELETE FROM clay_parent WHERE id=92');
+    });
+    const resetDefault={...defaultInput,defaultValue:null};
+    const {body:resetPreview}=await request(editor,'POST',{...resetDefault,preview:true},admin);
+    await request(editor,'POST',{...resetDefault,confirmation:resetPreview.confirmation},admin);
     const userPermission = 'users/'+readerId+'/permissions';
     const rows = conn+'/rows?schema='+schema+'&table=clay_parent';
     const csv = conn+'/csv?schema='+schema+'&table=clay_parent';
@@ -314,6 +330,8 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
     const structure = (await request(conn+'/schema','GET',undefined,reader)).body;
     assert.ok(structure.tables.some(table=>table[1]==='clay_child'));
     assert.deepEqual(structure.relations.find(edge=>edge[1]==='clay_child'),[schema,'clay_child',schema,'clay_parent']);
+    assert.deepEqual(Object.keys((await request(conn+'/schema?relations=0','GET',undefined,reader)).body),['tables']);
+    assert.deepEqual((await request(conn+'/schema-relations','GET',undefined,reader)).body,structure.relations);
     const page = (await request(rows,'GET',undefined,reader)).body;
     assert.deepEqual(page.rows,[[1,'original']]);
     await withDatabase(profile,async db=>{

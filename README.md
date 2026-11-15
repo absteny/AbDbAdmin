@@ -166,7 +166,7 @@ events visible to the connected database account.
 
 ### Run SQL scripts and restore a table
 
-On MySQL and MariaDB, administrators can open **SQL scripts**, select a
+On MySQL and MariaDB, administrators can open the script editor from **Export and restore**, select a
 UTF-8 SQL file or paste SQL, and confirm after reviewing the target and
 script preview. The file limit is 1 MB. Multiple result sets are displayed
 within the response limits. Client commands such as DELIMITER are outside
@@ -176,7 +176,7 @@ can leave earlier changes applied.
 
 Use **Export SQL** in a base table's **Browse** view for a single-table
 schema and data export, up to 1,000 rows and 1 MB. Restore it through
-**SQL scripts** in the intended database. Referenced tables must already
+the script editor in the intended database. Referenced tables must already
 exist where required. The export excludes triggers, routines, events,
 and spatial or vector columns. Use database backup tools for full backups.
 
@@ -194,7 +194,9 @@ are excluded from the URL.
 ### Inspect server status and object definitions
 
 On MySQL and MariaDB, administrators can open **Server status** to view
-selected global counters, settings, and the saved database account's grants.
+live connection, query and traffic charts. Samples update every three seconds
+and the browser keeps up to ten minutes of history per account and connection.
+Server settings and the saved database account's grants are below the charts.
 In **Database objects**, use **SQL definition** to view the accessible
 creation statement for a routine, trigger, or event. **Open in SQL scripts**
 copies the statement into an editable draft. Running it still requires a
@@ -210,28 +212,20 @@ Database exports with cross-database foreign keys or unsupported column
 types are rejected. Avoid concurrent schema changes while exporting.
 
 Choose a connection to an empty database and upload the file in
-**SQL scripts**. The file contains no DROP statements and temporarily
+the script editor under **Export and restore**. The file contains no DROP statements and temporarily
 disables foreign-key checks for the restore session so related tables can
 load in any order. Use the unmodified export from a consistent source.
 A failed script can leave earlier statements applied. Use native database
 backup tools for production backups.
 
-### Manage MySQL and MariaDB accounts
+### Edit a table's definition
 
-As an AbDbAdmin administrator, select a MySQL or MariaDB connection and open
-**Database users**. The editor lists server accounts and direct grants on
-the selected database. It supports account creation, password rotation, drop,
-and granting or revoking the listed privileges. Review and confirm every
-change. Passwords are excluded from previews and the AbDbAdmin audit log.
-Account creation and deletion affect the database server. The grant and
-revoke controls apply to the saved database, and reject database names
-containing wildcard characters or a backslash.
-
-The saved database account needs permission to read the relevant columns of
-`mysql.user` and `mysql.db`, and sufficient privileges for each requested
-operation. The grant list excludes inherited roles, global grants, and
-table-level grants. The editor prevents deleting or changing the password
-of the account used by the current connection.
+Open **Schema editor** and choose a table. AbDbAdmin reads types, defaults,
+collations, generated expressions, and comments from the database. The editor
+displays index definitions and foreign keys or constraints. The pencil opens
+column actions such as rename, default value, and type or nullability where
+supported. Type-specific controls allow you to enter lengths and precision.
+Review the generated statement and confirm it before applying the change.
 
 ### Change a column type or table engine
 

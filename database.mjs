@@ -182,8 +182,8 @@ export async function relations({query, pg}) {
   return (await query(sql)).rows;
 }
 
-export async function tableData(db, schema, table, offset, limit, view = {filters:[]}) {
-  const definition = await columns(db, schema, table, true);
+export async function tableData(db, schema, table, offset, limit, view = {filters:[]}, details = true) {
+  const definition = await columns(db, schema, table, details);
   if (!definition.length) return null;
   const quote = value => identifier(db.pg, value);
   const args = [];

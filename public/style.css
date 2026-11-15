@@ -232,3 +232,14 @@ dialog::backdrop{background:#163e4866}
   .filter-condition{grid-template-columns:minmax(0,1fr)}
   .catalog-summary{gap:.3rem}
 }
+
+textarea.sql-console-input{min-height:clamp(14rem,42dvh,29rem);resize:vertical;background:#090d13;color:#aef5df;
+  border:1px solid #244450;border-radius:12px;box-shadow:inset 0 0 16px #0009;caret-color:#7ef5bf;font-family:ui-monospace,monospace}
+textarea.sql-console-input::placeholder{color:#799a9b}
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr));gap:.85rem}
+.metric-card{padding:.85rem;background:#edf9f7;border:1px solid var(--line);border-radius:14px;min-width:0}
+.metric-card h3{margin:0;font-size:.86rem;color:var(--muted)}
+.metric-card strong{font-size:1.65rem;line-height:1.15;font-variant-numeric:tabular-nums}
+.metric-card canvas{width:100%;height:clamp(3.5rem,9vw,6.25rem);border-radius:.35rem}
+
+.metric-card .metric-dial{width:min(100%,14rem);height:auto;justify-self:center}

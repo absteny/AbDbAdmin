@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
 import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount, objectCommand } from './native-tools.mjs';
-import { schemaStatement, tableDefinition, columnTypes, tableEngines, postgresColumnTypes, postgresTableDefinition, postgresColumnStatement } from './schema-editor.mjs';
+import { schemaStatement, tableDefinition, columnTypes, tableEngines, postgresColumnTypes, postgresTableDefinition, postgresColumnStatement, mysqlTypeFamilies } from './schema-editor.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
 
 process.umask(0o077);
@@ -564,7 +564,7 @@ async function api(req, res, url, event) {
       }
       if (action==='server-status' && method==='GET') {
         requireValue(user.admin && mysql,'Требуются права администратора',403);
-        return remote(profile,db=>serverOverview(db));
+        return remote(profile,db=>serverOverview(db,{metricsOnly:url.searchParams.get('metrics')==='1'}));
       }
       if (action==='object-definition' && method==='GET') {
         requireValue(user.admin && mysql,'Требуются права администратора',403);
@@ -626,7 +626,7 @@ async function api(req, res, url, event) {
         }
         if (method==='POST') {
           const input=await body(req);
-          requireValue(['rename-column','modify-column'].includes(input.operation) &&
+          requireValue(['rename-column','modify-column','set-column-default'].includes(input.operation) &&
             [input.schema,input.table].every(value=>typeof value==='string' && value.length>0 && value.length<=63));
           return remote(profile,async db=>{
             const definition=await postgresTableDefinition(db,input.schema,input.table);
@@ -650,17 +650,18 @@ async function api(req, res, url, event) {
         requireValue(user.admin && ['mysql','mariadb'].includes(record.engine),'Требуются права администратора',403);
         if (method==='GET') {
           const table=url.searchParams.get('table');
-          if (!table) return {columnTypes,tableEngines,database:profile.database};
+          if (!table) return {columnTypes,mysqlTypeFamilies,tableEngines,database:profile.database};
           const definition=await remote(profile,db=>tableDefinition(db,profile.database,table));
           requireValue(definition,'Таблица недоступна',404);
           return definition;
         }
         if (method==='POST') {
           const input=await body(req);
-          const checkDefinition=['modify-column','change-engine'].includes(input.operation);
+          const checkDefinition=['modify-column','change-engine','set-column-default'].includes(input.operation);
           if (checkDefinition) requireValue(typeof input.table==='string' && input.table.length<=64);
           return remote(profile,async db=>{
             const definition=checkDefinition?await tableDefinition(db,profile.database,input.table):null;
+            if (input.operation==='set-column-default') requireValue(definition?.columns.some(([name])=>name===input.columnName),'Столбец недоступен',404);
             let sql;
             try { sql=schemaStatement(profile.database,input,definition); }
             catch (error) {
@@ -672,8 +673,10 @@ async function api(req, res, url, event) {
             if (input.preview===true) return {sql,confirmation};
             requireValue(input.confirmation===confirmation,'Сначала откройте предпросмотр изменений',409);
             event.action='schema.change';
-            if (input.operation==='modify-column') {
-              await db.script("SET SESSION sql_mode=IF(FIND_IN_SET('STRICT_ALL_TABLES',@@SESSION.sql_mode),@@SESSION.sql_mode,CONCAT_WS(',',NULLIF(@@SESSION.sql_mode,''),'STRICT_ALL_TABLES'))",row=>row);
+            if (['modify-column','set-column-default'].includes(input.operation)) {
+              await db.script(`SET SESSION sql_mode=CONCAT_WS(',',NULLIF(@@SESSION.sql_mode,''),
+                IF(FIND_IN_SET('STRICT_ALL_TABLES',@@SESSION.sql_mode),NULL,'STRICT_ALL_TABLES'),
+                IF(FIND_IN_SET('NO_BACKSLASH_ESCAPES',@@SESSION.sql_mode),NULL,'NO_BACKSLASH_ESCAPES'))`,row=>row);
             }
             await db.query(sql);
             return {};
@@ -681,8 +684,13 @@ async function api(req, res, url, event) {
         }
       }
       if (action === 'schema' && method === 'GET') {
-        return remote(profile,async db=>({tables:await structure(db,{catalog:true}),relations:await relations(db)}));
+        const includeRelations=url.searchParams.get('relations')!=='0';
+        return remote(profile,async db=>({
+          tables:await structure(db,{catalog:true}),
+          ...(includeRelations?{relations:await relations(db)}:{}),
+        }));
       }
+      if (action==='schema-relations' && method==='GET') return remote(profile,relations);
       if (action === 'sql' && method === 'POST') {
         requireValue(['sql','admin'].includes(record.level),'Нет доступа к SQL',403);
         const {sql} = await body(req);
@@ -724,7 +732,7 @@ async function api(req, res, url, event) {
           requireValue(Number.isSafeInteger(offset) && offset >= 0 && offset <= 1000000);
           const limit = action==='csv'?501:51;
           const view=readView(url);
-          const result = await remote(profile, db=>tableData(db,schema,table,offset,limit,view));
+          const result = await remote(profile, db=>tableData(db,schema,table,offset,limit,view,action==='rows' && url.searchParams.get('metadata')!=='0'));
           requireValue(!result?.invalidView,'Столбец недоступен');
           requireValue(result,'Таблица недоступна',404);
           if (action === 'csv') {
