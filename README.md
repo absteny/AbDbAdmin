@@ -133,6 +133,15 @@ the same name replaces the existing view. Filter values travel as URL query
 parameters when loading rows or downloading CSV. Avoid logging query strings
 at your reverse proxy if filters may contain sensitive values.
 
+### Edit a MySQL or MariaDB schema
+
+In AbDbAdmin, select a MySQL or MariaDB connection as an administrator and
+open **Schema editor**. Create, rename, or drop tables, add, rename, or drop
+columns, and manage indexes and foreign keys. The editor shows the exact SQL
+before applying a change and records the result in the AbDbAdmin audit log.
+It uses the saved database account and is scoped to the connection's database.
+The built-in editor requires no companion container.
+
 ### Review row changes
 
 Use **Review changes** after editing or inserting a row. Deleting from the
@@ -184,8 +193,7 @@ schema administration:
 sh install.sh --local --advanced
 ```
 
-Open [http://127.0.0.1:8100](http://127.0.0.1:8100) or use **Advanced MySQL and MariaDB** in the AbDbAdmin administrator sidebar.
-Sign in with a database account. Enter its server address as seen from Docker. The companion uses its
+Open [http://127.0.0.1:8100](http://127.0.0.1:8100) and sign in with a database account. Enter its server address as seen from Docker. The companion uses its
 own session and the database server's permissions. AbDbAdmin credentials,
 saved connection secrets, permission settings and audit history are separate.
 The companion is for MySQL and MariaDB. Use a PostgreSQL-native tool for

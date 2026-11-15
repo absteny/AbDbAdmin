@@ -166,7 +166,6 @@ function render() {
       button(t('Пользователи и права'),()=>setView('users'),null,{'aria-current':String(people)}),
       button(t('Журнал действий'),()=>setView('audit'),null,{'aria-current':String(state.view==='audit')}),
       button(t('Демо'),()=>setView('demo'),null,{'aria-current':String(state.view==='demo')})):null,
-    state.user.advancedUrl?e('a',{href:state.user.advancedUrl,target:'_blank',rel:'noopener noreferrer'},t('Расширенное управление MySQL и MariaDB')):null,
     div('grow'),
     div('stack',languagePicker(),e('small',{},state.user.name),button(t('Сменить пароль'),changePassword),button(t('Выйти'),click(async()=>{
       await api('logout','POST');tableViews.clear();state.user=null;login();
@@ -175,7 +174,7 @@ function render() {
     active && !utility ? div('row tabs',
       ...[['structure',t('Структура')],['tables',t('Обзор')],['graph',t('3D-схема')],...(!demo && ['admin','sql'].includes(active.level)?[['sql','SQL']]:[])]
         .map(([key,title])=>button(title,()=>setView(key),null,{'aria-current':String(state.view===key)})),
-      admin && mysqlWorkspace?button('phpMyAdmin',()=>setView('advanced'),null,{'aria-current':String(state.view==='advanced')}):null,
+      admin && mysqlWorkspace?button(t('Редактор структуры'),()=>setView('schema-editor'),null,{'aria-current':String(state.view==='schema-editor')}):null,
       admin && !demo?button(t('Настройки'),click(async()=>editConnection(await api(route('settings')),active.id))):null,
     ):null,content)));
   if (state.view==='demo') return demoView(content);
@@ -188,7 +187,7 @@ function render() {
     return;
   }
   if (state.view === 'sql') return sqlView(content);
-  if (state.view === 'advanced' && admin && mysqlWorkspace) return advancedWorkspace(content,stamp).catch(error=>showError(content,stamp,error));
+  if (state.view === 'schema-editor' && admin && mysqlWorkspace) return schemaEditor(content,stamp).catch(error=>showError(content,stamp,error));
   loadTables(content,stamp).catch(error=>showError(content,stamp,error));
 }
 function showError(target, stamp, error) {
@@ -301,7 +300,7 @@ const auditActions = {
   'user.create':'Создание пользователя','user.delete':'Удаление пользователя','permission.change':'Изменение прав',
   'connection.create':'Создание подключения','connection.update':'Изменение подключения','connection.delete':'Удаление подключения',
   'sql.execute':'Выполнение SQL','row.write':'Операция со строкой','row.insert':'Добавление строки',
-  'row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо',
+  'row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры',
 };
 
 async function auditView(target,stamp,before=null) {
@@ -350,28 +349,111 @@ function demoView(target) {
   ));
 }
 
-async function advancedWorkspace(target,stamp) {
-  if (!state.user.advancedUrl) {
-    target.append(div('panel stack',e('h2',{},'phpMyAdmin'),
-      e('p',{},t('Запустите расширенный локальный режим, чтобы открыть phpMyAdmin.')),
-      e('code',{},'PowerShell: .\\install.ps1 -Advanced'),
-      e('code',{},'Linux / macOS: sh install.sh --local --advanced')));
-    return;
-  }
-  target.append(div('panel',t('Загрузка…')));
-  const config=await api(route('settings'));
+async function schemaEditor(target,stamp) {
+  const path=route('structure-editor');
+  const connection=state.connection;
+  const [settings,schema]=await Promise.all([api(path),state.schema?Promise.resolve(state):api(route('schema'))]);
   if (stamp!==renderId) return;
+  if (!state.schema) Object.assign(state,{schema:true,...schema});
+  const tables=state.tables.filter(([schema,,type])=>schema===settings.database && type==='BASE TABLE');
+  const picker=select('table',tables.map(([,name])=>[name,name]),state.table?.[1] ?? tables[0]?.[1]);
+  if (!picker.value && tables.length) picker.value=tables[0][1];
+  const details=div('stack');
+  const nameField=()=>label(t('Название'),field('name','text','',{required:true,maxlength:64}));
+  const pickColumn=(name,columns,title=t('Столбец'))=>select(name,columns.map(column=>[column,column]),columns[0],{required:true,'aria-label':title});
+
+  function operation(title,inputs,makeInput) {
+    const editor=form(inputs,t('Предпросмотр изменений'),async values=>{
+      const input=makeInput(values);
+      const preview=await api(path,'POST',{...input,preview:true});
+      openDialog(t('Предпросмотр изменений'),form([
+        e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' / '+settings.database),
+        e('pre',{class:'schema-sql'},preview.sql),
+        e('p',{},t('Изменения структуры могут применяться без возможности отката.')),
+      ],t('Подтвердить'),async ()=>{
+        await api(path,'POST',{...input,confirmation:preview.confirmation});
+        state.schema=null;state.table=null;state.offset=0;
+        dialog.close();
+        render();
+      },button(t('Назад'),()=>openDialog(title,editor))));
+    });
+    openDialog(title,editor);
+  }
+
+  function columnFields(index,primary=false) {
+    return div('fields',label(t('Столбец'),field('column'+index,'text','',{required:true,maxlength:64})),
+      label(t('Тип'),select('type'+index,settings.columnTypes.map(type=>[type,type]),'INT')),
+      e('label',{class:'check'},field('null'+index,'checkbox','1'),t('Допускает NULL')),
+      primary?e('label',{class:'check'},field('primary'+index,'checkbox','1'),t('Первичный ключ')):null);
+  }
+  const asColumn=(values,index)=>({name:values['column'+index],type:values['type'+index],
+    nullable:Boolean(values['null'+index]),primary:Boolean(values['primary'+index])});
+
+  function createTable() {
+    const fields=div('stack',columnFields(0,true));
+    const add=button(t('Добавить столбец'),()=>{
+      fields.append(columnFields(fields.children.length,true));
+      add.disabled=fields.children.length>=30;
+    });
+    operation(t('Создать таблицу'),[nameField(),fields,add],values=>({
+      operation:'create-table',table:values.name,
+      columns:Array.from(fields.children,(_,index)=>asColumn(values,index)),
+    }));
+  }
+
+  async function loadDefinition() {
+    const table=picker.value;
+    if (!table) return;
+    details.replaceChildren(e('p',{},t('Загрузка…')));
+    const definition=await api(path+'?'+new URLSearchParams({table}));
+    if (stamp!==renderId || table!==picker.value) return;
+    const columns=definition.columns.map(row=>row[0]);
+    const indexes=[...new Set(definition.indexes.map(row=>row[0]).filter(name=>name!=='PRIMARY'))];
+    const foreignKeys=[...new Set(definition.foreignKeys.map(row=>row[0]))];
+    const edit=(code,title,inputs,values)=>button(t(title),()=>operation(t(title),inputs(),input=>({operation:code,table,...values(input)})));
+    function addForeignKey() {
+      const ref=select('referencedTable',tables.map(([,name])=>[name,name]),table);
+      const referenced=div('stack');
+      async function refresh() {
+        const target=ref.value;
+        referenced.replaceChildren();
+        const selected=await api(path+'?'+new URLSearchParams({table:target}));
+        if (ref.value===target) referenced.replaceChildren(label(t('Целевой столбец'),pickColumn('referencedColumn',selected.columns.map(row=>row[0]))));
+      }
+      ref.addEventListener('change',click(refresh));
+      operation(t('Добавить внешний ключ'),[nameField(),label(t('Столбец'),pickColumn('columnName',columns)),
+        label(t('Целевая таблица'),ref),referenced],values=>({operation:'add-foreign-key',table,...values}));
+      refresh().catch(report);
+    }
+    const columnList=()=>label(t('Столбец'),pickColumn('columnName',columns));
+    details.replaceChildren(
+      div('row',
+        edit('rename-table','Переименовать таблицу',()=>nameField(),v=>v),
+        edit('drop-table','Удалить таблицу',()=>e('p',{},table),()=>({}))),
+      e('h3',{},t('Столбцы')),
+      resultTable({columns:[t('Имя'),t('Тип'),t('Допускает NULL'),t('По умолчанию'),t('Дополнительно')],rows:definition.columns}),
+      div('row',
+        edit('add-column','Добавить столбец',()=>columnFields(0),v=>({column:asColumn(v,0)})),
+        edit('rename-column','Переименовать столбец',()=>[columnList(),nameField()],v=>v),
+        edit('drop-column','Удалить столбец',()=>columnList(),v=>v)),
+      e('h3',{},t('Индексы')),
+      resultTable({columns:[t('Имя'),t('Столбец'),t('Уникальный')],rows:definition.indexes.map(([name,column,nonUnique])=>[name,column,t(nonUnique?'Нет':'Да')])}),
+      div('row',
+        edit('add-index','Добавить индекс',()=>[nameField(),columnList(),e('label',{class:'check'},field('unique','checkbox','1'),t('Уникальный'))],
+          v=>({name:v.name,keys:[v.columnName],unique:Boolean(v.unique)})),
+        indexes.length?edit('drop-index','Удалить индекс',()=>label(t('Имя'),pickColumn('name',indexes)),v=>v):null),
+      e('h3',{},t('Внешние ключи')),
+      resultTable({columns:[t('Имя'),t('Столбец'),t('Схема'),t('Целевая таблица'),t('Целевой столбец')],rows:definition.foreignKeys}),
+      div('row',button(t('Добавить внешний ключ'),addForeignKey),
+        foreignKeys.length?edit('drop-foreign-key','Удалить внешний ключ',()=>label(t('Имя'),pickColumn('name',foreignKeys)),v=>v):null),
+    );
+  }
+
+  picker.addEventListener('change',click(loadDefinition));
   target.replaceChildren(div('panel stack',
-    e('h2',{},'phpMyAdmin'),
-    e('p',{},t('Войдите в phpMyAdmin под учётной записью сервера БД и выберите указанную базу. Перед изменениями проверьте сервер и базу в открывшейся вкладке.')),
-    e('dl',{class:'connection-details'},[
-      [t('Хост'),config.host+':'+config.port],
-      [t('База данных'),config.database],
-      [t('Пользователь БД'),config.user],
-    ].map(([title,value])=>div('row',e('dt',{},title),e('dd',{},value)))),
-    e('p',{},t('В phpMyAdmin доступны импорт, экспорт, управление структурой, пользователями БД, процедурами и триггерами.')),
-    e('a',{href:state.user.advancedUrl,target:'_blank',rel:'noopener noreferrer',class:'workspace-link'},t('Открыть phpMyAdmin')),
-  ));
+    div('row spread',e('h2',{},t('Редактор структуры')),button(t('Создать таблицу'),createTable,'primary')),
+    tables.length?label(t('Таблица'),picker):e('p',{},t('Подходящих таблиц нет.')),details));
+  await loadDefinition();
 }
 
 function databaseStructure(target) {

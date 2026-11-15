@@ -146,6 +146,7 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       user:'clay', database:'clay', password:'clay-db-test', tls:false,
     };
     await withDatabase(profile,async db=>{
+      if (!pg) await db.query('DROP TABLE IF EXISTS clay_editor_test, clay_editor_test_renamed');
       await db.query('DROP TABLE IF EXISTS clay_child');
       await db.query('DROP TABLE IF EXISTS clay_parent');
       await db.query('CREATE TABLE clay_parent (id INT PRIMARY KEY, label VARCHAR(80) DEFAULT NULL)');
@@ -163,6 +164,41 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
     const saved = await readFile(join(directory,'claydb.sqlite-wal'));
     assert.equal(saved.includes(profile.password),false);
     const conn = 'connections/'+id;
+    if (pg) {
+      await request(conn+'/structure-editor','GET',undefined,admin,403);
+    } else {
+      const editor=conn+'/structure-editor';
+      const grant='users/'+readerId+'/permissions';
+      await request(grant,'PUT',{connection:id,level:'sql'},admin);
+      await request(editor,'GET',undefined,reader,403);
+      await request(grant,'PUT',{connection:id,level:null},admin);
+      const change=async input=>{
+        const {body:preview}=await request(editor,'POST',{...input,preview:true},admin);
+        assert.ok(preview.sql && preview.confirmation);
+        await request(editor,'POST',{...input,confirmation:preview.confirmation},admin);
+      };
+      const table='clay_editor_test';
+      await withDatabase(profile,db=>db.query('DROP TABLE IF EXISTS clay_editor_test'));
+      const create={operation:'create-table',table,columns:[{name:'id',type:'INT',nullable:false,primary:true}]};
+      await request(editor,'POST',create,admin,409);
+      const {body:dryRun}=await request(editor,'POST',{...create,preview:true},admin);
+      await request(editor+'?table='+table,'GET',undefined,admin,404);
+      await request(editor,'POST',{...create,table:table+'_other',confirmation:dryRun.confirmation},admin,409);
+      await change(create);
+      await change({operation:'add-column',table,column:{name:'parent_id',type:'INT',nullable:true}});
+      await change({operation:'add-index',table,name:'test_idx',keys:['parent_id']});
+      await change({operation:'add-foreign-key',table,name:'test_fk',columnName:'parent_id',referencedTable:'clay_parent',referencedColumn:'id'});
+      const {body:definition}=await request(editor+'?table='+table,'GET',undefined,admin);
+      assert.ok(definition.columns.some(row=>row[0]==='parent_id'));
+      assert.ok(definition.indexes.some(row=>row[0]==='test_idx'));
+      assert.ok(definition.foreignKeys.some(row=>row[0]==='test_fk'));
+      await change({operation:'drop-foreign-key',table,name:'test_fk'});
+      await change({operation:'drop-index',table,name:'test_idx'});
+      await change({operation:'rename-column',table,columnName:'parent_id',name:'related_id'});
+      await change({operation:'drop-column',table,columnName:'related_id'});
+      await change({operation:'rename-table',table,name:table+'_renamed'});
+      await change({operation:'drop-table',table:table+'_renamed'});
+    }
     const userPermission = 'users/'+readerId+'/permissions';
     const rows = conn+'/rows?schema='+schema+'&table=clay_parent';
     const csv = conn+'/csv?schema='+schema+'&table=clay_parent';

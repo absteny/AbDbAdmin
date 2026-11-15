@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
+import { schemaStatement, tableDefinition, columnTypes } from './schema-editor.mjs';
 import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
 
@@ -507,6 +508,34 @@ async function api(req, res, url, event) {
       }
       const demo = record.engine==='demo';
       const profile = demo ? null : reveal(record.secret);
+      if (action==='structure-editor') {
+        requireValue(user.admin && ['mysql','mariadb'].includes(record.engine),'Требуются права администратора',403);
+        if (method==='GET') {
+          const table=url.searchParams.get('table');
+          if (!table) return {columnTypes,database:profile.database};
+          const definition=await remote(profile,db=>tableDefinition(db,profile.database,table));
+          requireValue(definition,'Таблица недоступна',404);
+          return definition;
+        }
+        if (method==='POST') {
+          const input=await body(req);
+          let sql;
+          try { sql=schemaStatement(profile.database,input); }
+          catch (error) {
+            if (!(error instanceof TypeError)) throw error;
+            throw new RequestError(400,'Проверьте заполнение полей');
+          }
+          if (input.preview===true) {
+            const confirmation=createHmac('sha256',key).update(JSON.stringify([user.id,record.id,record.secret,sql])).digest('hex');
+            return {sql,confirmation};
+          }
+          const expected=createHmac('sha256',key).update(JSON.stringify([user.id,record.id,record.secret,sql])).digest('hex');
+          requireValue(input.confirmation===expected,'Сначала откройте предпросмотр изменений',409);
+          event.action='schema.change';
+          await remote(profile,db=>db.query(sql));
+          return {};
+        }
+      }
       if (action === 'schema' && method === 'GET') {
         return demo ? demoStructure() : remote(profile,async db=>({tables:await structure(db),relations:await relations(db)}));
       }

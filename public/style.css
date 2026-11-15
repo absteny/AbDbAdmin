@@ -126,3 +126,5 @@ dialog::backdrop{background:#163e4866}
 .connection-details dd{margin:0;overflow-wrap:anywhere}
 .connection-details .row{margin-block:.45rem}
 .workspace-link{display:inline-block;justify-self:start;padding:.6rem .85rem;border-radius:10px;background:#d7eeee;font-weight:650}
+
+.schema-sql{max-height:15rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:1rem;background:#e5f4f1;border:1px solid var(--line);border-radius:10px}
