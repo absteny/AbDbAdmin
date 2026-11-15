@@ -16,6 +16,17 @@ function languagePicker() {
     },
   }));
 }
+function themePicker() {
+  const root=document.documentElement;
+  return label(t('Тема'),select('theme',[['light',t('Светлая')],['dark',t('Тёмная')]],root.dataset.theme ?? 'light',{
+    onchange:event=>{
+      const theme=event.target.value;
+      root.dataset.theme=theme;
+      try {localStorage.setItem('abdb-theme',theme);} catch {}
+      window.dispatchEvent(new Event('abdb-theme-change'));
+    },
+  }));
+}
 applyLanguage();
 
 const app = document.querySelector('#app');
@@ -261,7 +272,7 @@ function login() {
     restoreRoute();
   });
   app.replaceChildren(div('login',div('panel login-card',
-    div('login-main stack',div('row spread',brand(),languagePicker()),e('h1',{},t('Ваши базы данных')),e('p',{},t('Войдите, чтобы открыть сохранённые подключения.')),content),
+    div('login-main stack',div('row spread',brand(),div('row appearance-pickers',languagePicker(),themePicker())),e('h1',{},t('Ваши базы данных')),e('p',{},t('Войдите, чтобы открыть сохранённые подключения.')),content),
     div('login-art',div('clay-stack',e('span'),e('span'),e('span'))),
   )));
 }
@@ -314,7 +325,7 @@ function render() {
       button(t('Пользователи и права'),()=>setView('users'),null,{'aria-current':String(people)}),
       button(t('Журнал действий'),()=>setView('audit'),null,{'aria-current':String(state.view==='audit')})):null,
     div('grow'),
-    div('stack',languagePicker(),e('small',{},state.user.name),button(t('Сменить пароль'),changePassword),button(t('Выйти'),click(async()=>{
+    div('stack',languagePicker(),themePicker(),e('small',{},state.user.name),button(t('Сменить пароль'),changePassword),button(t('Выйти'),click(async()=>{
       await api('logout','POST');tableViews.clear();scriptDraft=null;state.user=null;login();
     }))),
   ),e('main',{class:active && !utility?'main stack database-workspace'+(state.view==='structure'?' structure-workspace':''):'main stack'},heading,
@@ -781,7 +792,8 @@ async function serverStatusView(target,stamp) {
   const controller=new AbortController();
   let timer;
   let details=null;
-  stopRowLoading=()=>{clearTimeout(timer);controller.abort();};
+  window.addEventListener('abdb-theme-change',draw);
+  stopRowLoading=()=>{clearTimeout(timer);controller.abort();window.removeEventListener('abdb-theme-change',draw);};
   const number=new Intl.NumberFormat(language,{maximumFractionDigits:1});
   const clock=new Intl.DateTimeFormat(language,{timeStyle:'medium'});
   function chart(title,metric,{unit='',cap=null,dialMax=cap}={}) {
@@ -790,13 +802,17 @@ async function serverStatusView(target,stamp) {
     const from=Date.now()-horizon;
     const top=cap ?? Math.max(1,...points.map(entry=>entry[metric]));
     const plot=e('canvas',{width:480,height:100,'aria-hidden':'true'});
+    const palette=getComputedStyle(document.documentElement);
+    const gridColor=palette.getPropertyValue('--chart-grid').trim();
+    const lineColor=palette.getPropertyValue('--chart-line').trim();
+    const needleColor=palette.getPropertyValue('--chart-needle').trim();
     const context=plot.getContext('2d');
     if (context) {
-      context.strokeStyle='#b6d9d6';
+      context.strokeStyle=gridColor;
       for (const y of [16,52,89]) {
         context.beginPath();context.moveTo(0,y);context.lineTo(480,y);context.stroke();
       }
-      context.strokeStyle='#087e83';context.lineWidth=3;
+      context.strokeStyle=lineColor;context.lineWidth=3;
       let started=false;
       context.beginPath();
       for (const entry of history) {
@@ -815,9 +831,9 @@ async function serverStatusView(target,stamp) {
     if (dial) {
       const angle=Math.PI*(1+Math.min(1,value/dialMax));
       dial.lineWidth=14;dial.lineCap='round';
-      dial.strokeStyle='#c1ddd9';dial.beginPath();dial.arc(120,109,85,Math.PI,2*Math.PI);dial.stroke();
-      dial.strokeStyle='#087e83';dial.beginPath();dial.arc(120,109,85,Math.PI,angle);dial.stroke();
-      dial.lineWidth=4;dial.strokeStyle='#164651';dial.beginPath();dial.moveTo(120,109);
+      dial.strokeStyle=gridColor;dial.beginPath();dial.arc(120,109,85,Math.PI,2*Math.PI);dial.stroke();
+      dial.strokeStyle=lineColor;dial.beginPath();dial.arc(120,109,85,Math.PI,angle);dial.stroke();
+      dial.lineWidth=4;dial.strokeStyle=needleColor;dial.beginPath();dial.moveTo(120,109);
       dial.lineTo(120+72*Math.cos(angle),109+72*Math.sin(angle));dial.stroke();
     }
     return div('metric-card stack',e('h3',{},title),

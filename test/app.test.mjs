@@ -93,6 +93,7 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
   assert.equal(outsideHost,403);
   assert.equal((await fetch(base,{headers:{'X-Forwarded-For':'192.0.2.10'}})).status,403);
   assert.equal((await fetch(base+'/i18n.js')).status,200);
+  assert.equal((await fetch(base+'/theme.js')).status,200);
   const unauthenticated = language => fetch(base+'/api/session',{headers:{'Accept-Language':language}}).then(res=>res.json());
   assert.deepEqual(await unauthenticated('en'),{error:'Sign in to the panel'});
   assert.deepEqual(await unauthenticated('ru'),{error:'Войдите в панель'});

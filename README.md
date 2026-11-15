@@ -24,6 +24,8 @@ Open [http://127.0.0.1:8099](http://127.0.0.1:8099).
 2. Change that password using **Change password**.
 3. Choose **English** or **Russian** using the language selector. English is
    the default, and your selection is remembered by that browser.
+4. Use **Theme** on the sign-in screen or in the sidebar to switch between
+   **Light** and **Dark**. Your browser remembers your choice.
 
 Local-only mode opens directly to the panel sign-in form without a Basic
 Auth prompt. Installations started without this mode still require the

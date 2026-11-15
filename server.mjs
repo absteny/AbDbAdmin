@@ -183,6 +183,7 @@ const sessionDuration = 8 * 60 * 60 * 1000;
 const rates = new Map();
 const paths = {
   '/': ['index.html','text/html; charset=utf-8'],
+  '/theme.js': ['theme.js','text/javascript; charset=utf-8'],
   '/style.css': ['style.css','text/css; charset=utf-8'],
   '/i18n.js': ['i18n.js','text/javascript; charset=utf-8'],
   '/app.js': ['app.js','text/javascript; charset=utf-8'],

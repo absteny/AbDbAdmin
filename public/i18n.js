@@ -1,4 +1,7 @@
 const english = {
+  "Тема": "Theme",
+  "Светлая": "Light",
+  "Тёмная": "Dark",
   "Если база запущена на самом SSH-сервере, проверьте подключение к ней через 127.0.0.1. Для базы на другом сервере необходимо настроить TLS.": "If the database runs on the SSH server itself, try 127.0.0.1. Configure TLS if the database runs on a different server.",
   "База на SSH-сервере: проверить 127.0.0.1": "Database on the SSH server: try 127.0.0.1",
   "Для прямого подключения настройте TLS на сервере базы. Если база доступна через SSH, заполните настройки туннеля.": "Configure TLS on the database server for a direct connection. If the database is accessible through SSH, enter the tunnel settings.",

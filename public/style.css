@@ -19,6 +19,9 @@
   font-family:"Inter Variable",system-ui,sans-serif;
   color:#153744;
   background:#e6f3f2;
+  --chart-grid:#b6d9d6;
+  --chart-line:#087e83;
+  --chart-needle:#164651;
   --muted:#45636c;
   --accent:#086e80;
   --surface:#f5fcfb;
@@ -343,3 +346,67 @@ textarea.sql-console-input::placeholder{color:#799a9b}
 .toast-dismiss{padding:.2rem .4rem;color:inherit;background:#ffffff24;font-size:1rem;line-height:1}
 @keyframes toast-enter{from{opacity:0;transform:translateY(-.4rem)}to{opacity:1;transform:translateY(0)}}
 @media(prefers-reduced-motion:reduce){.toast{animation:none}}
+
+.appearance-pickers{justify-content:flex-end}
+:root[data-theme=dark]{
+  color-scheme:dark;
+  color:#e2eff0;
+  background:#101b22;
+  --muted:#a5bdc4;
+  --accent:#79dfd5;
+  --surface:#172830;
+  --line:#354e58;
+  --shadow:0 6px 20px #0004,inset 0 1px #ffffff08;
+  --raised:#20363e;
+  --control:#20353f;
+  --active:#28504f;
+  --stripe:#1c3039;
+  --hover:#28434c;
+  --chart-grid:#3c5962;
+  --chart-line:#6ce1cf;
+  --chart-needle:#e7fbf9;
+}
+[data-theme=dark] :focus-visible{outline-color:var(--accent)}
+[data-theme=dark] button{background:var(--control);color:#d9ebed}
+[data-theme=dark] button:hover{background:var(--hover)}
+[data-theme=dark] button.primary{background:#237c79;color:#fff}
+[data-theme=dark] button.primary:hover{background:#286e6e}
+[data-theme=dark] button.danger{background:#522b37;color:#ffbac4}
+[data-theme=dark] button.danger:hover{background:#653442}
+[data-theme=dark] :is(input,select,textarea){background:var(--control)}
+[data-theme=dark] :is(label,th){color:#ccdee2}
+[data-theme=dark] :is(.panel,dialog,.sidebar,th,td){border-color:var(--line)}
+[data-theme=dark] :is(.sidebar,.database-workspace .tabs){background:#13242d}
+[data-theme=dark] .nav button{background:transparent}
+[data-theme=dark] .nav button:is(:hover,[aria-current=true]),
+[data-theme=dark] .tabs button[aria-current=true]{background:var(--active);color:var(--accent)}
+[data-theme=dark] :is(th,.structure-grid th,.catalog-filter,.metric-card,.schema-sql,.audit-parameters,.browse-tools summary,.tag,.workspace-link){
+  background:var(--raised);color:#d7e9eb
+}
+[data-theme=dark] .structure-grid tbody tr:nth-child(even){background:var(--stripe)}
+[data-theme=dark] .structure-grid tbody tr:hover{background:var(--hover)}
+[data-theme=dark] .row-data-grid tr:has(.row-choice input:checked){background:var(--active)}
+[data-theme=dark] td:last-child.actions{background:var(--surface)}
+[data-theme=dark] :is(.catalog-filter input[type=search],.catalog-bulk select){background:var(--control)}
+[data-theme=dark] .catalog-panel .catalog-action{background:transparent;color:var(--accent)}
+[data-theme=dark] .catalog-panel .catalog-action:hover{background:var(--active)}
+[data-theme=dark] .login-art{background:radial-gradient(ellipse at 60% 35%,#285453,#142d3f)}
+[data-theme=dark] dialog::backdrop{background:#071319ad}
+[data-theme=dark] .form-error{color:#ffb7c4}
+[data-theme=dark] :is(canvas,.relationship-stage){background:#13252e}
+[data-theme=dark] .relationship-card{background:var(--raised);border-color:var(--line);box-shadow:0 .25rem #102127,0 .45rem .75rem #0005}
+[data-theme=dark] .relationship-card.current{background:var(--active);border-color:#579a95;box-shadow:0 .3rem #1b383b,0 .48rem 1rem #0005}
+[data-theme=dark] .relationship-card button{background:transparent;color:var(--accent)}
+[data-theme=dark] .relationship-edge span{color:var(--accent)}
+[data-theme=dark] #request-loader{background:radial-gradient(ellipse at 50% 46%,#162b34ad,#101b2266);color:#e2eff0}
+[data-theme=dark] .loader-copy{background:#172830ee;border-color:var(--line)}
+[data-theme=dark] .loader-track{background:var(--line)}
+[data-theme=dark] .loader-track::after{background:var(--accent)}
+[data-theme=dark] .connection-mode{background:var(--surface)}
+[data-theme=dark] .connection-mode[aria-pressed=true]{background:var(--active)}
+[data-theme=dark] .connection-result{background:var(--raised);border-color:var(--line)}
+[data-theme=dark] .connection-result[data-kind=success]{background:#213b33;border-color:#437858;color:#b4edc6}
+[data-theme=dark] .connection-result[data-kind=error]{background:#412c32;border-color:#88525a;color:#ffd2d7}
+[data-theme=dark] .connection-result[data-kind] p{color:inherit}
+[data-theme=dark] .toast-dismiss{color:inherit;background:#ffffff24}
+[data-theme=dark] textarea.sql-console-input{background:#090d13}
