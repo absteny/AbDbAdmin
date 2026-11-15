@@ -82,3 +82,44 @@ export async function tableDefinition(db,database,table) {
   return {engine:objects.rows[0][1],columns:columns.rows.map(row=>row.slice(0,5)),columnChanges,
     hasForeignKeys:Boolean(foreignKeys.rows.length || incoming.rows.length),indexes:indexes.rows,foreignKeys:foreignKeys.rows};
 }
+
+export const postgresColumnTypes = [
+  'BIGINT','INTEGER','SMALLINT','NUMERIC(18,2)','DOUBLE PRECISION','BOOLEAN',
+  'VARCHAR(32)','VARCHAR(64)','VARCHAR(128)','VARCHAR(255)','VARCHAR(512)','TEXT',
+  'DATE','TIMESTAMP','TIMESTAMPTZ','JSON','JSONB','BYTEA','UUID',
+];
+
+export async function postgresTableDefinition(db,schema,table) {
+  const {rows}=await db.query(
+    `SELECT c.column_name,c.data_type,c.is_nullable,c.is_identity,c.is_generated
+     FROM information_schema.columns c JOIN information_schema.tables t
+       ON t.table_schema=c.table_schema AND t.table_name=c.table_name
+     WHERE c.table_schema=$1 AND c.table_name=$2 AND t.table_type='BASE TABLE'
+       AND c.table_schema NOT IN ('pg_catalog','information_schema')
+       AND c.table_schema NOT LIKE 'pg_toast%' AND c.table_schema NOT LIKE 'pg_temp%'
+     ORDER BY c.ordinal_position`,[schema,table]);
+  if (!rows.length) return null;
+  return {columns:rows.map(row=>row.slice(0,3)),columnChanges:rows.map(([name,,,identity,generated])=>
+    [name,identity==='NO' && generated==='NEVER'])};
+}
+
+export function postgresColumnStatement(input,definition) {
+  const quote=name=>{
+    if (typeof name!=='string' || !name.length || Buffer.byteLength(name)>63 || /[\u0000-\u001f\u007f]/.test(name)) {
+      throw new TypeError('Invalid identifier');
+    }
+    return identifier(true,name);
+  };
+  const table=quote(input.schema)+'.'+quote(input.table);
+  const name=input.operation==='rename-column'?input.columnName:input.column?.name;
+  const field=quote(name);
+  const existing=definition?.columnChanges.find(([column])=>column===name);
+  if (!existing) return null;
+  if (input.operation==='rename-column') return 'ALTER TABLE '+table+' RENAME COLUMN '+field+' TO '+quote(input.name);
+  if (input.operation!=='modify-column' || !postgresColumnTypes.includes(input.column.type) || typeof input.column.nullable!=='boolean') {
+    throw new TypeError('Invalid column definition');
+  }
+  if (!existing[1]) return null;
+  const nullable=input.column.nullable?'DROP NOT NULL':'SET NOT NULL';
+  return 'ALTER TABLE '+table+' ALTER COLUMN '+field+' TYPE '+input.column.type+', ALTER COLUMN '+field+' '+nullable;
+}

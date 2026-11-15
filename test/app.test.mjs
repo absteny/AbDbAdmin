@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { withDatabase } from '../database.mjs';
 
-for (const local of [false,true]) test(local ? 'Local access, demo, and audit' : 'Remote Basic Auth and rotation', {timeout:90000}, async t=>{
+for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remote Basic Auth and rotation', {timeout:90000}, async t=>{
   const directory = await mkdtemp(join(tmpdir(),'claydb-test-'));
   const server = spawn(process.execPath,['server.mjs'],{env:{...process.env,DATA_DIR:directory,PORT:'0',BIND_HOST:'127.0.0.1',COOKIE_SECURE:'0',ABDB_LOCAL_ONLY:local?'1':'0'}});
   t.after(async ()=>{
@@ -100,42 +100,7 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
   assert.deepEqual((await request('connections','GET',undefined,reader)).body,[]);
 
   await request('audit','GET',undefined,reader,403);
-  await request('demo','POST',undefined,reader,403);
-  const {body:{id:demoId}} = await request('demo','POST',undefined,admin);
-  assert.equal((await request('demo','POST',undefined,admin)).body.id,demoId);
-  const demo = 'connections/'+demoId;
-  const grant = 'users/'+readerId+'/permissions';
-  await request(demo+'/schema','GET',undefined,reader,404);
-  await request(grant,'PUT',{connection:demoId,level:'edit'},admin,403);
-  await request(grant,'PUT',{connection:demoId,level:'view'},admin);
-  const {body:demoConnections} = await request('connections','GET',undefined,reader);
-  assert.deepEqual(demoConnections.map(item=>[item.id,item.level]),[[demoId,'view']]);
-  const {body:sampleSchema} = await request(demo+'/schema','GET',undefined,reader);
-  assert.equal(sampleSchema.tables.length,4);
-  assert.ok(sampleSchema.relations.some(edge=>edge.join('.')==='store.orders.store.customers'));
-  const orders = demo+'/rows?schema=store&table=orders';
-  assert.deepEqual((await request(orders,'GET',undefined,reader)).body.rows[0],[103,1,'shipped']);
-  const criteria={filters:[{column:'status',operator:'contains',value:'PA'}],sort:{column:'id',direction:'desc'}};
-  const filtered=orders+'&filter='+encodeURIComponent(JSON.stringify(criteria));
-  assert.deepEqual((await request(filtered,'GET',undefined,reader)).body.rows,[[101,1,'paid']]);
-  const views=demo+'/views?schema=store&table=orders';
-  await request(views,'POST',{name:'Paid orders',view:criteria},reader);
-  const {body:stored}=await request(views,'GET',undefined,reader);
-  assert.deepEqual(stored[0].view,criteria);
-  assert.deepEqual((await request(views,'GET',undefined,admin)).body,[]);
-  await request(views+'&id='+stored[0].id,'DELETE',undefined,admin);
-  assert.equal((await request(views,'GET',undefined,reader)).body.length,1);
-  await request(views+'&id='+stored[0].id,'DELETE',undefined,reader);
-  assert.deepEqual((await request(views,'GET',undefined,reader)).body,[]);
-  const {body:customers} = await request(demo+'/rows?schema=store&table=customers','GET',undefined,reader);
-  assert.deepEqual(customers.rows[0],[3,'Cedar Lab']);
-  const row = {action:'update',key:{id:101},values:{status:'secret-row-marker'}};
-  await request(orders,'POST',row,reader,403);
-  await request(orders,'POST',row,admin,403);
-  await request(demo+'/sql','POST',{sql:'SELECT secret-sql-marker'},admin,403);
-  await request(demo+'/csv?schema=store&table=orders','GET',undefined,reader);
-  await request(demo,'DELETE',undefined,admin);
-  await request(orders,'GET',undefined,reader,404);
+  await request('demo','POST',undefined,admin,404);
 
   await t.test('Database integration', {skip:!process.env.TEST_DB_ENGINE}, async ()=>{
     const engine = process.env.TEST_DB_ENGINE;
@@ -165,7 +130,7 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
     assert.equal(saved.includes(profile.password),false);
     const conn = 'connections/'+id;
     if (pg) {
-      await request(conn+'/structure-editor','GET',undefined,admin,403);
+      assert.ok((await request(conn+'/structure-editor','GET',undefined,admin)).body.columnTypes.includes('INTEGER'));
     } else {
       const objects=await request(conn+'/database-objects','GET',undefined,admin);
       assert.deepEqual(Object.keys(objects.body),['routines','triggers','events']);
@@ -322,6 +287,25 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       await change({operation:'rename-table',table,name:table+'_renamed'});
       await change({operation:'drop-table',table:table+'_renamed'});
     }
+    if (pg) {
+      const editor=conn+'/structure-editor';
+      const selection={schema,table:'clay_parent'};
+      const definition=(await request(editor+'?'+new URLSearchParams(selection),'GET',undefined,admin)).body;
+      assert.ok(definition.columnChanges.find(([name])=>name==='label')[1]);
+      const change=async input=>{
+        const operation={...selection,...input};
+        await request(editor,'POST',operation,admin,409);
+        const {body:preview}=await request(editor,'POST',{...operation,preview:true},admin);
+        assert.match(preview.sql,/^ALTER TABLE "public"."clay_parent"/);
+        await request(editor,'POST',{...operation,confirmation:preview.confirmation},admin);
+      };
+      await change({operation:'rename-column',columnName:'label',name:'description'});
+      await change({operation:'modify-column',column:{name:'description',type:'VARCHAR(128)',nullable:false}});
+      const changed=(await request(editor+'?'+new URLSearchParams(selection),'GET',undefined,admin)).body;
+      assert.deepEqual(changed.columns[1],['description','character varying','NO']);
+      await change({operation:'modify-column',column:{name:'description',type:'VARCHAR(128)',nullable:true}});
+      await change({operation:'rename-column',columnName:'description',name:'label'});
+    }
     const userPermission = 'users/'+readerId+'/permissions';
     const rows = conn+'/rows?schema='+schema+'&table=clay_parent';
     const csv = conn+'/csv?schema='+schema+'&table=clay_parent';
@@ -343,6 +327,18 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
     const ascending=rows+'&filter='+encodeURIComponent(JSON.stringify({filters:[],sort:{column:'id',direction:'asc'}}));
     assert.equal((await request(ascending,'GET',undefined,reader)).body.rows[0][0],1);
     await withDatabase(profile,db=>db.query('DELETE FROM clay_parent WHERE id>1'));
+    assert.equal(Number(page.definition[0][4].numeric_precision),pg?32:10);
+    assert.equal(Number(page.definition[1][4].character_maximum_length),pg?128:80);
+    const views=conn+'/views?schema='+schema+'&table=clay_parent';
+    const criteria={filters:[{column:'label',operator:'contains',value:'ori'}],sort:{column:'id',direction:'desc'}};
+    await request(views,'POST',{name:'Original rows',view:criteria},reader);
+    const {body:stored}=await request(views,'GET',undefined,reader);
+    assert.deepEqual(stored[0].view,criteria);
+    assert.deepEqual((await request(views,'GET',undefined,admin)).body,[]);
+    await request(views+'&id='+stored[0].id,'DELETE',undefined,admin);
+    assert.equal((await request(views,'GET',undefined,reader)).body.length,1);
+    await request(views+'&id='+stored[0].id,'DELETE',undefined,reader);
+    assert.deepEqual((await request(views,'GET',undefined,reader)).body,[]);
     assert.ok(page.definition[0][3]);
     assert.match((await request(csv,'GET',undefined,reader)).body,/"1","original"/);
     await request(rows,'POST',{action:'update',key:{id:1},values:{label:'changed'}},reader,403);
@@ -379,11 +375,13 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
     log.entries.push(...older.entries);
   }
   assert.ok(log.entries.some(e=>e.action==='login' && e.status===401 && e.actor===null));
-  assert.ok(log.entries.some(e=>e.action==='permission.change' && e.actor==='admin' && e.connection_id===demoId && e.subject_id===readerId && e.status===200));
-  assert.ok(log.entries.some(e=>e.action==='sql.execute' && e.status===403));
-  assert.ok(log.entries.some(e=>e.action==='csv.export' && e.actor==='reader' && e.status===200));
-  assert.ok(log.entries.some(e=>e.action==='row.write' && e.actor==='reader' && e.status===403));
-  for (const secret of ['secret-row-marker','secret-sql-marker',initial,'test-reader-pass']) {
+  if (process.env.TEST_DB_ENGINE) {
+    assert.ok(log.entries.some(e=>e.action==='permission.change' && e.actor==='admin' && e.subject_id===readerId && e.status===200));
+    assert.ok(log.entries.some(e=>e.action==='sql.execute' && e.status===403));
+    assert.ok(log.entries.some(e=>e.action==='csv.export' && e.actor==='reader' && e.status===200));
+    assert.ok(log.entries.some(e=>e.action==='row.write' && e.actor==='reader' && e.status===403));
+  }
+  for (const secret of [initial,'test-reader-pass']) {
     assert.equal(JSON.stringify(log).includes(secret),false);
   }
   const oldest=log.entries.at(-1).id;

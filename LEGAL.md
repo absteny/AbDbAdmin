@@ -33,7 +33,7 @@ metadata, encrypted connection profiles, and an audit log on the operator's
 server. Audit records include available actor names, target identifiers,
 timestamps, actions, and outcomes. The application sends queries to configured
 database servers and presents the results to authorized users. CSV exports
-are downloaded by the user. The built-in demo uses synthetic data.
+are downloaded by the user.
 
 The application does not send telemetry or database contents to the project
 maintainer. Hosting, reverse proxies, and backup services may handle data

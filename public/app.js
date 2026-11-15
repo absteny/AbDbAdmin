@@ -21,7 +21,7 @@ applyLanguage();
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#dialog');
 const notice = document.querySelector('#notice');
-const labelKeys = {postgres:'PostgreSQL',mysql:'MySQL',mariadb:'MariaDB',demo:'Учебная база',view:'Просмотр',edit:'Редактирование строк',sql:'Доступ к SQL',admin:'Администратор'};
+const labelKeys = {postgres:'PostgreSQL',mysql:'MySQL',mariadb:'MariaDB',view:'Просмотр',edit:'Редактирование строк',sql:'Доступ к SQL',admin:'Администратор'};
 const state = {user:null,connections:[],connection:null,view:'tables',schema:null,tables:[],relations:[],table:null,offset:0};
 let renderId = 0;
 let noticeTimer;
@@ -74,7 +74,12 @@ function startRequest(path,method) {
   const show=()=>{
     if (!requests.size) return;
     requestLabel.textContent=t([...requests.values()].at(-1));
+    const wasHidden=requestLoader.hidden;
     requestLoader.hidden=false;
+    if (wasHidden && typeof requestLoader.showPopover==='function') {
+      requestLoader.setAttribute('popover','manual');
+      requestLoader.showPopover();
+    }
   };
   if (requestLoader.hidden) {
     if (!requestTimer) requestTimer=setTimeout(()=>{requestTimer=undefined;show();},140);
@@ -84,6 +89,10 @@ function startRequest(path,method) {
     if (!requests.size) {
       clearTimeout(requestTimer);
       requestTimer=undefined;
+      if (requestLoader.hasAttribute('popover')) {
+        requestLoader.hidePopover();
+        requestLoader.removeAttribute('popover');
+      }
       requestLoader.hidden=true;
     } else if (!requestLoader.hidden) show();
   };
@@ -150,7 +159,7 @@ function select(name, entries, value, attrs={}) {
   result.value = value;
   return result;
 }
-const utilityRoutes=new Set(['users','audit','demo']);
+const utilityRoutes=new Set(['users','audit']);
 const databaseRoutes=new Set(['structure','tables','graph','sql','database-search','sql-script','database-objects','schema-editor','server-status','database-accounts','database-backup']);
 let pendingTable=null;
 let pendingTableAction=null;
@@ -162,7 +171,7 @@ let appliedHash=null;
 function allowedView(view,connection) {
   if (utilityRoutes.has(view)) return Boolean(state.user.admin);
   if (!databaseRoutes.has(view) || !connection) return false;
-  if (view==='sql') return connection.engine!=='demo' && ['admin','sql'].includes(connection.level);
+  if (view==='sql') return ['admin','sql'].includes(connection.level);
   if (view==='database-search') return ['mysql','mariadb'].includes(connection.engine);
   if (['sql-script','database-objects','schema-editor','server-status','database-accounts','database-backup'].includes(view)) {
     return state.user.admin && ['mysql','mariadb'].includes(connection.engine);
@@ -252,18 +261,18 @@ function render() {
   const stamp = ++renderId;
   const active = state.connection;
   const admin = state.user.admin;
-  const pages={users:'Пользователи',audit:'Журнал действий',demo:'Демо'};
+  const pages={users:'Пользователи',audit:'Журнал действий'};
   const utility = Object.hasOwn(pages,state.view);
   const people = state.view === 'users';
-  const demo = active?.engine === 'demo';
   const mysqlWorkspace = active && ['mysql','mariadb'].includes(active.engine);
   const engine = active && t(labelKeys[active.engine] ?? active.engine);
   const content = div('stack');
   const workspace=Boolean(active && !utility);
   const tableSidebar=div('sidebar-tables');
   const schemaReady=workspace?loadWorkspaceSchema(active.id,stamp,tableSidebar):null;
-  const heading = div('hero',e('h1',{},utility?t(pages[state.view]):active?.name || t('Подключения')),
-    active && !utility ? e('p',{},engine+' · '+t(labelKeys[active.level])+(active.production?' · PRODUCTION':'')) : null);
+  const browsedTable=state.view==='tables' && (pendingTable ?? state.table);
+  const heading = div('hero',e('h1',{},browsedTable?t('Таблица')+' · '+browsedTable[1]:utility?t(pages[state.view]):active?.name || t('Подключения')),
+    active && !utility ? e('p',{},(browsedTable?active.name+' / '+browsedTable[0]+' · ':'')+engine+' · '+t(labelKeys[active.level])+(active.production?' · PRODUCTION':'')) : null);
   app.replaceChildren(div(workspace?'shell schema-shell':'shell',div('sidebar',
     brand(),
     div('row spread',e('span',{class:'nav-heading'},t('Подключения')),admin?button('+',()=>editConnection(), 'primary',{'aria-label':t('Добавить подключение')}):null),
@@ -274,15 +283,14 @@ function render() {
       workspace && connection.id===active.id?tableSidebar:null))),
     admin?div('nav',
       button(t('Пользователи и права'),()=>setView('users'),null,{'aria-current':String(people)}),
-      button(t('Журнал действий'),()=>setView('audit'),null,{'aria-current':String(state.view==='audit')}),
-      button(t('Демо'),()=>setView('demo'),null,{'aria-current':String(state.view==='demo')})):null,
+      button(t('Журнал действий'),()=>setView('audit'),null,{'aria-current':String(state.view==='audit')})):null,
     div('grow'),
     div('stack',languagePicker(),e('small',{},state.user.name),button(t('Сменить пароль'),changePassword),button(t('Выйти'),click(async()=>{
       await api('logout','POST');tableViews.clear();scriptDraft=null;state.user=null;login();
     }))),
-  ),e('main',{class:active && !utility?'main stack database-workspace':'main stack'},heading,
+  ),e('main',{class:active && !utility?'main stack database-workspace'+(state.view==='structure'?' structure-workspace':''):'main stack'},heading,
     active && !utility ? div('row tabs',
-      ...[['structure',t('Структура')],['tables',t('Обзор')],['graph',t('3D-схема')],...(!demo && ['admin','sql'].includes(active.level)?[['sql','SQL']]:[])]
+      ...[['structure',t('Структура')],['graph',t('3D-схема')],...(['admin','sql'].includes(active.level)?[['sql','SQL']]:[])]
         .map(([key,title])=>button(title,()=>setView(key),null,{'aria-current':String(state.view===key)})),
       mysqlWorkspace?button(t('Поиск по базе'),()=>setView('database-search'),null,{'aria-current':String(state.view==='database-search')}):null,
       admin && mysqlWorkspace?button(t('Выгрузка и восстановление'),()=>setView('database-backup'),null,{'aria-current':String(state.view==='database-backup')}):null,
@@ -291,9 +299,8 @@ function render() {
       admin && mysqlWorkspace?button(t('Состояние сервера'),()=>setView('server-status'),null,{'aria-current':String(state.view==='server-status')}):null,
       admin && mysqlWorkspace?button(t('Объекты БД'),()=>setView('database-objects'),null,{'aria-current':String(state.view==='database-objects')}):null,
       admin && mysqlWorkspace?button(t('Редактор структуры'),()=>setView('schema-editor'),null,{'aria-current':String(state.view==='schema-editor')}):null,
-      admin && !demo?button(t('Настройки'),click(async()=>editConnection(await api(route('settings')),active.id))):null,
+      admin?button(t('Настройки'),click(async()=>editConnection(await api(route('settings')),active.id))):null,
     ):null,content)));
-  if (state.view==='demo') return demoView(content);
   if (state.view==='audit') return auditView(content,stamp).catch(error=>showError(content,stamp,error));
   if (people) return users(content,stamp).catch(error=>showError(content,stamp,error));
   if (!active) {
@@ -408,7 +415,7 @@ async function permissions(user) {
   openDialog(t('Доступ · ')+user.name,div('stack',
     e('p',{},t('SQL разрешает любые запросы в рамках прав учётной записи сохранённого подключения.')),
     state.connections.length ? state.connections.map(connection=>{
-      const picker = select('level',[['',t('Нет доступа')],['view',t('Просмотр')],...(connection.engine==='demo'?[]:[['edit',t('Редактирование строк')],['sql',t('Доступ к SQL')]])],values.get(connection.id) || '');
+      const picker = select('level',[['',t('Нет доступа')],['view',t('Просмотр')],['edit',t('Редактирование строк')],['sql',t('Доступ к SQL')]],values.get(connection.id) || '');
       const save = button(t('Сохранить'),click(async ()=>{
         await api(url,'PUT',{connection:connection.id,level:picker.value || null});
         toast(t('Доступ обновлён'));
@@ -451,31 +458,6 @@ async function auditView(target,stamp,before=null) {
   ));
 }
 
-function demoView(target) {
-  const demo=state.connections.find(item=>item.engine==='demo');
-  target.append(div('panel stack',
-    e('h2',{},'Sample Store'),
-    e('p',{},t('Тестовые клиенты, заказы и товары. Данные доступны только для чтения.')),
-    demo?button(t('Удалить демо'),()=>confirmAction(t('Удалить демо'),t('Удалить демо-подключение и относящиеся к нему права?'),async ()=>{
-      await api('connections/'+demo.id,'DELETE');
-      await refreshConnections();
-      render();
-    }),'danger'):button(t('Запустить демо'),click(async ()=>{
-      await api('demo','POST');
-      await refreshConnections();
-      render();
-    }),'primary'),
-  ));
-  target.append(div('panel stack',
-    e('h2',{},t('1. Дать коллеге доступ на просмотр')),
-    e('p',{},t('Откройте пользователей, создайте учебный аккаунт или выберите существующий. Для подключения Sample Store установите «Просмотр» и сохраните. Войдите под этим аккаунтом и проверьте доступ к таблицам.')),
-    button(t('Открыть пользователей'),()=>setView('users'),null,{disabled:!demo}),
-  ),div('panel stack',
-    e('h2',{},t('2. Найти связанные таблицы')),
-    e('p',{},t('Откройте 3D-схему, найдите связь orders → customers и откройте orders. Сравните customer_id в заказах с id в customers.')),
-    button(t('Открыть 3D-схему'),click(async ()=>{await choose(demo.id);setView('graph');}),null,{disabled:!demo}),
-  ));
-}
 
 function backupView(target) {
   const download=button(t('Скачать SQL'),click(async ()=>{
@@ -945,18 +927,10 @@ function databaseStructure(target) {
   const connection=state.connection;
   const mysql=['mysql','mariadb'].includes(connection.engine);
   const canEdit=state.user.admin && mysql;
-  const canInsert=connection.engine!=='demo' && connection.level!=='view';
   const number=new Intl.NumberFormat(language);
   const checked=new Set();
   const onlySelected=field('onlySelected','checkbox','1');
   const selectionStatus=e('small',{role:'status'});
-  const favoritesKey='abdb-favorites:'+state.user.name+':'+connection.id;
-  let favorites=new Set();
-  try {
-    const saved=JSON.parse(localStorage.getItem(favoritesKey) || '[]');
-    if (Array.isArray(saved)) favorites=new Set(saved.filter(value=>typeof value==='string'));
-  } catch {}
-  const favoriteOnly=field('favoriteOnly','checkbox','1');
   const tableKey=([schema,name])=>JSON.stringify([schema,name]);
   const bytes=value=>{
     const n=Number(value);
@@ -967,25 +941,6 @@ function databaseStructure(target) {
   function action(title,icon,fn,style='') {
     return e('button',{type:'button',class:'catalog-action '+style,onclick:fn},
       e('span',{'aria-hidden':'true',class:'catalog-icon'},icon),t(title));
-  }
-  async function change(table,operation) {
-    const path=route('structure-editor');
-    const input={operation,table:table[1]};
-    const preview=await api(path,'POST',{...input,preview:true});
-    if (state.connection?.id!==connection.id || state.view!=='structure') return;
-    openDialog(t('Предпросмотр изменений'),form([
-      e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' / '+table[0]+'.'+table[1]),
-      e('p',{},t('Вы точно хотите внести эти изменения?')),
-      e('p',{},t(operation==='truncate-table'?'Все строки будут удалены. Структура таблицы сохранится.':'Таблица и все её данные будут удалены.')),
-      e('pre',{class:'schema-sql'},preview.sql),
-    ],t('Подтвердить'),async ()=>{
-      await api(path,'POST',{...input,confirmation:preview.confirmation});
-      state.schema=null;
-      if (state.table?.[1]===table[1] && state.table?.[0]===table[0] && operation==='drop-table') state.table=null;
-      writeRoute(true);
-      dialog.close();
-      render();
-    }));
   }
   const bulkChoices=[
     ['CHECK',t('Проверить')],['ANALYZE',t('Обновить статистику')],['OPTIMIZE',t('Оптимизировать')],
@@ -1049,7 +1004,7 @@ function databaseStructure(target) {
     const visible=state.tables.filter(table=> {
       const [schema,name]=table;
       return (schema+'.'+name).toLowerCase().includes(needle) &&
-        (!onlySelected.checked || checked.has(tableKey(table))) && (!favoriteOnly.checked || favorites.has(tableKey(table)));
+        (!onlySelected.checked || checked.has(tableKey(table)));
     });
     const selectAll=field('selectAll','checkbox','1',{'aria-label':t('Выбрать видимые таблицы'),
       checked:visible.length>0 && visible.every(table=>checked.has(tableKey(table)))});
@@ -1071,21 +1026,11 @@ function databaseStructure(target) {
         const base=type==='BASE TABLE';
         const selected=field('tableSelected','checkbox','1',{'aria-label':name,checked:checked.has(key)});
         selected.addEventListener('change',()=>{if (selected.checked) checked.add(key);else checked.delete(key);update();});
-        const favorite=button(favorites.has(key)?'★':'☆',()=>{
-          if (favorites.has(key)) favorites.delete(key);else favorites.add(key);
-          try {localStorage.setItem(favoritesKey,JSON.stringify([...favorites]));} catch {}
-          update();
-        },'catalog-star',{'aria-label':t('Избранное')+' · '+name,'aria-pressed':String(favorites.has(key))});
         return e('tr',{},
           e('td',{class:'catalog-choice'},selected),
           e('td',{class:'catalog-name'},button(name,()=>openWorkspaceTable(table),'table-link',{title:schema+'.'+name})),
-          e('td',{class:'catalog-action-cell'},div('row catalog-actions',favorite,
-            action('Обзор','▦',()=>openWorkspaceTable(table)),
-            canEdit && base?action('Структура','▤',()=>openWorkspaceTable(table,'schema-editor')):null,
-            action('Поиск по таблице','⌕',()=>openWorkspaceTable(table,'tables','filter')),
-            canInsert && base?action('Вставить','⊕',()=>openWorkspaceTable(table,'tables','insert')):null,
-            canEdit && base?action('Очистить','▱',click(()=>change(table,'truncate-table')),'catalog-danger'):null,
-            canEdit && base?action('Удалить','⊖',click(()=>change(table,'drop-table')),'catalog-danger'):null)),
+          e('td',{class:'catalog-action-cell'},div('row catalog-actions',
+            canEdit && base?action('Структура','▤',()=>openWorkspaceTable(table,'schema-editor')):null)),
           ...(mysql?[rows==null?'—':number.format(Number(rows)),engine ?? t('Представление БД'),collation ?? '—',
             size==null?'—':bytes(size),Number(free)>0?bytes(free):'—']:[schema,type]).map(value=>e('td',{class:'catalog-meta'},value)));
       }))));
@@ -1095,15 +1040,22 @@ function databaseStructure(target) {
   }
   search.addEventListener('input',update);
   onlySelected.addEventListener('change',update);
-  favoriteOnly.addEventListener('change',update);
   target.append(div('catalog-panel',
     e('fieldset',{class:'catalog-filter'},e('legend',{},t('Фильтры')),
       div('row',label(t('Содержит слово'),search),
-        e('label',{class:'check'},favoriteOnly,t('Только избранные')),
         e('label',{class:'check'},onlySelected,t('Только выбранные')))),
     results,div('row spread catalog-summary',selectionStatus,canEdit?div('row catalog-bulk',bulkSelect,bulkRun):null,
       button(t('Обновить структуру'),()=>{state.schema=null;render();}))));
   update();
+  const footer=target.querySelector('.catalog-summary');
+  if (typeof ResizeObserver==='function') {
+    const workspace=target.closest('main');
+    const resize=new ResizeObserver(()=>{
+      workspace.style.setProperty('--catalog-footer-height',footer.offsetHeight+'px');
+    });
+    resize.observe(footer);
+    stopRowLoading=()=>resize.disconnect();
+  }
 }
 
 async function loadTables(target,stamp,schemaReady) {
@@ -1128,9 +1080,8 @@ async function loadTables(target,stamp,schemaReady) {
   if (state.view==='graph') {writeRoute(true);return graph(target);}
   if (state.view==='structure') {writeRoute(true);return databaseStructure(target);}
   if (!state.table) state.table=state.tables[0];
+  target.closest('main').querySelector('h1').textContent=t('Таблица')+' · '+state.table[1];
   writeRoute(true);
-  const initialAction=pendingTableAction;
-  pendingTableAction=null;
   const path = route('rows')+'?'+rowParams();
   let data;
   try { data = await api(path); }
@@ -1143,12 +1094,19 @@ async function loadTables(target,stamp,schemaReady) {
     return;
   }
   if (stamp!==renderId) return;
-  const editable = state.connection.engine!=='demo' && state.connection.level!=='view' && state.table[2]==='BASE TABLE';
+  const editable = state.connection.level!=='view' && state.table[2]==='BASE TABLE';
   const rowActions=page=>editable && page.definition.some(field=>field[3]) && !page.unsafeKey
     ? row=>button(t('Изменить'),()=>rowDialog(page,path,row)) : null;
   const showActions=editable && data.definition.some(field=>field[3]);
   const actionCell=page=>showActions ? (rowActions(page) ?? (()=>'—')) : null;
-  const grid=resultTable(data,actionCell(data));
+  const nativeAdmin=state.user.admin && editable && ['mysql','mariadb'].includes(state.connection.engine);
+  const columnMetadata=new Map(data.definition.map(column=>[column[0],column]));
+  const gridOptions=page=>({
+    rowEdit:rowActions(page)?row=>rowDialog(page,path,row):null,
+    header:name=>columnHeader(name,columnMetadata.get(name),state.user.admin && editable),
+    tableClass:'structure-grid row-data-grid',
+  });
+  const grid=resultTable(data,actionCell(data),gridOptions(data));
   grid.classList.add('browsing-grid');
   const count=e('small',{role:'status'});
   const loadButton=button(t('Загрузить ещё'),click(loadMore));
@@ -1179,7 +1137,7 @@ async function loadTables(target,stamp,schemaReady) {
         return;
       }
       const tableBody=grid.querySelector('tbody');
-      tableBody.append(...resultTable(page,actionCell(page)).querySelector('tbody').children);
+      tableBody.append(...resultTable(page,actionCell(page),{rowEdit:gridOptions(page).rowEdit}).querySelector('tbody').children);
       offset+=page.rows.length;
       more=page.truncated && page.rows.length>0 && offset<=1000000;
       updateStatus();
@@ -1199,18 +1157,14 @@ async function loadTables(target,stamp,schemaReady) {
   }
   updateStatus();
   const csv = e('a',{href:'/api/'+route('csv')+'?'+rowParams()},t('CSV · до 500 строк'));
-  const nativeAdmin=state.user.admin && editable && ['mysql','mariadb'].includes(state.connection.engine);
   const exportSql=nativeAdmin?e('a',{href:'/api/'+route('sql-export')+'?'+new URLSearchParams({table:state.table[1]})},t('Экспорт SQL')):null;
-  target.append(div('panel stack',
-    div('row spread',e('h2',{},state.table[1]),div('row',csv,exportSql,nativeAdmin?button(t('Обслуживание таблицы'),maintenanceDialog):null,state.user.admin && editable && ['mysql','mariadb'].includes(state.connection.engine)
-      ? button(t('Импорт CSV'),openCsvImport):null,editable?button(t('Добавить строку'),()=>rowDialog(data,path),'primary'):null)),
-    div('row',
-      button(t('Фильтры и сортировка'),()=>filterDialog(data.columns)),
-      button(t('Сохранённые представления'),click(savedViews)),
-      currentTableView().filters.length || currentTableView().sort
-        ? button(t('Сбросить фильтры'),()=>applyTableView({filters:[],sort:null})) : null),
-    grid,
-  ));
+  target.append(div('catalog-panel browse-panel',
+    div('row spread browse-toolbar',
+      div('row row-transfer',csv,exportSql,nativeAdmin?button(t('Импорт CSV'),openCsvImport):null),
+      div('row',nativeAdmin?button(t('Обслуживание таблицы'),maintenanceDialog):null,
+        editable?button(t('Добавить строку'),()=>rowDialog(data,path),'primary'):null)),
+    div('browse-filters',filterControls(data.columns)),
+    grid));
   if (more && typeof IntersectionObserver==='function') {
     observer=new IntersectionObserver(entries=>{
       if (entries.some(entry=>entry.isIntersecting)) loadMore();
@@ -1218,27 +1172,100 @@ async function loadTables(target,stamp,schemaReady) {
     observer.observe(footer);
   }
   stopRowLoading=()=>{observer?.disconnect();};
-  if (initialAction==='filter') filterDialog(data.columns);
-  if (initialAction==='insert' && editable) rowDialog(data,path);
-
-  target.append(div('panel stack',e('h2',{},t('Столбцы')),resultTable({
-    columns:[t('Имя'),t('Тип'),t('Допускает NULL'),t('Первичный ключ')],
-    rows:data.definition.map(([name,type,nullable,key])=>[name,type,nullable==='YES'?t('Да'):t('Нет'),key?t('Да'):'']),
-  })));
 }
-function resultTable(data,actions) {
+function resultTable(data,actions,{header,rowEdit,tableClass}={}) {
   if (!data.columns.length) return e('p',{},data.affected==null?t('Запрос выполнен'):t('Затронуто строк: {count}',{count:data.affected}));
-  return div('table-wrap',e('table',{},
-    e('thead',{},e('tr',{},data.columns.map(name=>e('th',{scope:'col'},name)),actions?e('th',{scope:'col'},t('Действия')):null)),
-    e('tbody',{},data.rows.map(row=>e('tr',{},row.map(value=>e('td',{},value==null?e('i',{},'NULL'):String(value))),actions?e('td',{class:'actions'},actions(row)):null))),
+  return div('table-wrap',e('table',tableClass?{class:tableClass}:{},
+    e('thead',{},e('tr',{},data.columns.map(name=>e('th',{scope:'col'},header?header(name):name)),actions?e('th',{scope:'col'},t('Действия')):null)),
+    e('tbody',{},data.rows.map(row=>{
+      const tr=e('tr',rowEdit?{class:'editable-row'}:{},
+        row.map(value=>e('td',{},value==null?e('i',{},'NULL'):String(value))),
+        actions?e('td',{class:'actions'},actions(row)):null);
+      if (rowEdit) tr.addEventListener('dblclick',event=>{
+        if (!event.target.closest('button,a,input,select,textarea')) rowEdit(row);
+      });
+      return tr;
+    })),
   ));
 }
-function filterDialog(columns) {
+function columnHeader(name,definition,editable) {
+  if (!definition) return name;
+  const [,type,nullable,key,metadata={}]=definition;
+  const propertyLabels={
+    column_default:'По умолчанию',character_maximum_length:'Длина',numeric_precision:'Точность',
+    numeric_scale:'Масштаб',datetime_precision:'Точность времени',collation_name:'Сравнение',
+    character_set_name:'Кодировка',generation_expression:'Выражение генерации',udt_name:'Тип СУБД',
+    is_identity:'Столбец идентификатора',identity_generation:'Генерация идентификатора',
+    is_generated:'Вычисляемый столбец',column_key:'Индекс',extra:'Дополнительно',column_comment:'Комментарий',
+  };
+  const properties=Object.entries(propertyLabels).flatMap(([property,label])=>{
+    const value=metadata[property];
+    return value==null || value===''?[]:[e('dt',{},t(label)),e('dd',{},String(value))];
+  });
+  return div('column-heading',
+    div('row column-name',e('strong',{},name),editable?button('✎',click(()=>editBrowseColumn(name)),'column-pencil',
+      {'aria-label':t('Изменить столбец')+' '+name,title:t('Изменить столбец')}):null),
+    e('small',{},[metadata.column_type ?? type,nullable==='YES'?'NULL':'NOT NULL',key?'PK':null].filter(Boolean).join(' · ')),
+    properties.length?e('details',{},e('summary',{},t('Свойства столбца')),e('dl',{},properties)):null);
+}
+
+async function editBrowseColumn(name) {
+  const stamp=renderId;
+  const [schema,table]=state.table;
+  const path=route('structure-editor');
+  const [settings,definition]=await Promise.all([api(path),api(path+'?'+new URLSearchParams({schema,table}))]);
+  if (stamp!==renderId) return;
+  const column=definition.columns.find(([current])=>current===name);
+  if (!column) throw new Error(t('Столбец недоступен'));
+  const [,type,nullable]=column;
+  const canModify=new Map(definition.columnChanges).get(name);
+  const title=t('Изменить столбец')+' · '+name;
+  function operation(inputs,makeInput) {
+    const editor=form(inputs,t('Предпросмотр изменений'),async values=>{
+      const input={schema,table,...makeInput(values)};
+      const preview=await api(path,'POST',{...input,preview:true});
+      openDialog(t('Предпросмотр изменений'),form([
+        e('strong',{},[state.connection.name,schema,table].join(' / ')),
+        e('p',{},t('Вы точно хотите внести эти изменения?')),
+        e('pre',{class:'schema-sql'},preview.sql),
+        e('p',{},t('Изменения структуры могут применяться без возможности отката.')),
+      ],t('Подтвердить'),async ()=>{
+        await api(path,'POST',{...input,confirmation:preview.confirmation});
+        if (input.operation==='rename-column') {
+          const view=currentTableView();
+          const rename=rule=>rule.column===name?{...rule,column:input.name}:rule;
+          dialog.close();
+          state.schema=null;
+          applyTableView({filters:view.filters.map(rename),sort:view.sort?rename(view.sort):null});
+          return;
+        }
+        dialog.close();
+        state.schema=null;
+        render();
+      },button(t('Назад'),()=>openDialog(title,editor))));
+    });
+    openDialog(title,editor);
+  }
+  const typeOptions=settings.columnTypes.map(value=>[value,value]);
+  const initial=typeOptions.find(([value])=>value.toLowerCase()===type.toLowerCase())?.[0] ?? '';
+  openDialog(title,div('row',
+    button(t('Переименовать столбец'),()=>operation(
+      label(t('Название'),field('name','text',name,{required:true,maxlength:64})),
+      values=>({operation:'rename-column',columnName:name,name:values.name}))),
+    canModify?button(t('Изменить тип столбца'),()=>operation([
+      label(t('Новый тип'),select('type',[['',t('Выберите тип')],...typeOptions],initial,{required:true})),
+      e('label',{class:'check'},field('nullable','checkbox','1',{checked:nullable==='YES'}),t('Допускает NULL')),
+      e('small',{},t('Смена типа преобразует существующие значения.')),
+    ],values=>({operation:'modify-column',column:{name,type:values.type,nullable:Boolean(values.nullable)}}))):
+      e('small',{},t('Особые свойства столбца'))));
+}
+
+function filterControls(columns) {
   const view=currentTableView();
   const items=div('stack');
   const choices=columns.map(name=>[name,name]);
   const sort=select('sort',[['',t('По умолчанию')],...choices],view.sort?.column ?? '');
-  const direction=select('direction',[['asc',t('По возрастанию')],['desc',t('По убыванию')]],view.sort?.direction ?? 'asc');
+  const direction=select('direction',[['asc',t('По возрастанию')],['desc',t('По убыванию')]],view.sort?.direction ?? 'desc');
   const add=button(t('Добавить условие'),()=>addFilter({column:columns[0],operator:'contains',value:''}));
   function addFilter(filter) {
     const column=select('column',choices,filter.column);
@@ -1249,7 +1276,7 @@ function filterDialog(columns) {
     const toggle=()=>{value.disabled=['null','not-null'].includes(operator.value);};
     operator.addEventListener('change',toggle);
     toggle();
-    const item=div('fields',
+    const item=div('filter-condition',
       label(t('Столбец'),column),label(t('Условие'),operator),
       label(t('Значение'),value),button(t('Удалить'),()=>{
         item.remove();add.disabled=false;
@@ -1258,14 +1285,18 @@ function filterDialog(columns) {
     add.disabled=items.children.length>=8;
   }
   view.filters.forEach(addFilter);
-  openDialog(t('Фильтры и сортировка'),form([
-    items,add,div('fields',label(t('Сортировка'),sort),label(t('Порядок'),direction)),
+  direction.disabled=!sort.value;
+  sort.addEventListener('change',()=>{direction.disabled=!sort.value;});
+  return e('fieldset',{class:'catalog-filter'},e('legend',{},t('Фильтры и сортировка')),form([
+    items,div('row filter-controls',label(t('Сортировка'),sort),label(t('Порядок'),direction),add),
   ],t('Применить'),async ()=>{
     const filters=Array.from(items.children,item=>Object.fromEntries(
       Array.from(item.querySelectorAll('input,select'),control=>[control.name,control.value])));
-    dialog.close();
     applyTableView({filters,sort:sort.value?{column:sort.value,direction:direction.value}:null});
-  }));
+  },[
+    button(t('Сохранённые представления'),click(savedViews)),
+    view.filters.length || view.sort?button(t('Сбросить фильтры'),()=>applyTableView({filters:[],sort:null})):null,
+  ]));
 }
 
 async function savedViews() {

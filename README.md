@@ -88,29 +88,14 @@ docker compose up --build -d --wait
 docker compose exec -T abdbadmin node --disable-warning=ExperimentalWarning server.mjs show-access
 ```
 
-## 2. Try the demo before connecting a real database
-
-Sign in as the administrator, open **Demo**, and select **Enable the demo**.
-The **Sample Store** connection uses a built-in, read-only database with
-synthetic customers, products, orders, and order items. It needs no database
-server, credentials, or network connection.
-
-| Scenario | Steps | Expected result |
-| --- | --- | --- |
-| Give a teammate read-only access | From **Demo**, select **Open users**. Create a practice user with a new password. Open the user's **Access**, set **Sample Store** to **View**, and save. Sign out of the panel and sign back in as the practice user. | **Sample Store** is visible. You can browse its rows and diagram. SQL and row-editing controls are unavailable. |
-| Find related tables in 3D | Sign back in as **admin**. In **Demo**, select **Open the 3D schema**. Find **orders** and **customers**, then open **orders** by selecting its block or using the table selector. | The diagram links **orders** to **customers**. The value of **orders.customer_id** matches **customers.id**. For example, order **101** belongs to customer **1**. |
-
-Use **Remove the demo** to delete the sample connection and its grants.
-Remove the practice user separately in **Users and permissions**.
-
-## 3. Connect your databases
+## 2. Connect your databases
 
 1. Select **Add connection** in the sidebar.
 2. Choose PostgreSQL, MySQL, or MariaDB. Enter the host, port, database name,
    and a database account. AbDbAdmin tests the connection before saving it.
 3. Keep TLS certificate verification enabled. If your database uses a private
    CA, paste its certificate in PEM format into the CA field.
-4. Select the saved connection. Use **Tables** to browse data, **3D schema**
+4. Select the saved connection. Select a table in **Structure** to browse data, **3D schema**
    to explore foreign keys, or **SQL** to run statements if you have access.
 
 The application runs inside Docker. From its perspective, `127.0.0.1` is
@@ -125,10 +110,16 @@ Select a connection to expand its table list in the left sidebar and open
 the table catalog on the right. On MySQL and MariaDB, the catalog includes
 storage engine, collation, size, and row counts reported by the server.
 Select a table on either side to browse its rows on the right. The catalog
-provides a filter bar, favorites, selection, and direct Browse and Search
-actions. For eligible tables, Insert opens the row editor. On MySQL and
-MariaDB, administrators can also open Structure, Empty, or Drop. Empty and
-Drop show the exact statement and require confirmation.
+provides filtering and selection. Its selection and refresh controls stay
+at the bottom of the screen.
+
+On the row screen, the heading identifies the selected table. Import and
+export controls are grouped above the rows. Each column header shows its type,
+nullability, and primary-key status. Expand **Column properties** for details
+such as its default and collation. Administrators can use the pencil to
+rename a column or change an eligible column's type and nullability.
+Double-click an editable row, or use **Edit**, to open its editor.
+Both editors require a review before applying changes.
 
 Browsing starts with primary-key columns in descending order. If there is no
 primary key, the default uses the first supported sortable column, when
@@ -139,7 +130,7 @@ when rows change while you are scrolling.
 
 ### Filter rows and save a view
 
-Open a table and select **Filters and sorting**. Add up to eight conditions
+Open a table and use **Filters and sorting** above the rows. Add up to eight conditions
 joined with AND. **Contains** searches within the text representation of a
 value and treats percent signs and underscores literally. **Equals** compares
 text using the database's comparison rules. You can also filter by NULL and
@@ -286,7 +277,7 @@ affect the final result. The preview applies to the row editor.
 | View | Browse tables and views, inspect the 3D diagram, and export CSV |
 | Edit rows | Everything in View, plus insert, update, and delete rows in base tables. Update and delete require a primary key. |
 | Run SQL | Everything in Edit rows, plus SQL with the privileges of the saved database account |
-| Administrator | All connections, users, permissions, the audit log, and demo setup |
+| Administrator | All connections, users, permissions, and the audit log |
 
 Give each saved database account only the privileges it needs. A user with
 **Run SQL** can reach any database objects allowed by that account, including
@@ -296,7 +287,7 @@ objects outside the profile's main database when the database server allows it.
 
 Administrators can open **Audit log** to see successful and failed panel
 sign-ins, sign-outs, password changes and local resets, user and permission
-changes, connection changes, demo activation, CSV exports, row writes, and SQL
+changes, connection changes, CSV exports, row writes, and SQL
 execution. Each event displays the time, action, outcome, and available actor
 and target identifiers. Failed sign-ins omit the submitted username.
 
@@ -346,7 +337,7 @@ To stop the companion without stopping AbDbAdmin:
 docker compose --profile advanced stop phpmyadmin
 ```
 
-## 4. Optional remote access
+## 3. Optional remote access
 
 Skip this section if you want the application on `127.0.0.1` only.
 
@@ -373,7 +364,7 @@ set `ABDB_BIND` to that interface, restrict it with a firewall, and use
 an encrypted transport for sign-in. `ABDB_IP` and `ABDB_DOMAIN` only set
 the addresses printed by the installer.
 
-## 5. Operate and update
+## 4. Operate and update
 
 | Task | Command |
 | --- | --- |

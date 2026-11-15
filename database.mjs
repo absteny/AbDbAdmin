@@ -147,18 +147,23 @@ export async function structure({query, pg}, {catalog=false}={}) {
   return rows;
 }
 
-export async function columns({query, pg}, schema, table) {
+export async function columns({query, pg}, schema, table, details = false) {
   const marks = pg ? ['$1','$2'] : ['?','?'];
+  const common = ['column_default','character_maximum_length','numeric_precision','numeric_scale','datetime_precision',
+    'collation_name','character_set_name','generation_expression'];
+  const properties = common.concat(pg ? ['udt_name','is_identity','identity_generation','is_generated']
+    : ['column_type','column_key','extra','column_comment']);
+  const metadata = details ? ', '+properties.map(name=>'c.'+name).join(', ') : '';
   const {rows} = await query(
     `SELECT c.column_name, c.data_type, c.is_nullable,
      EXISTS (SELECT 1 FROM information_schema.table_constraints t
        JOIN information_schema.key_column_usage k ON k.constraint_schema=t.constraint_schema
        AND k.constraint_name=t.constraint_name AND k.table_schema=t.table_schema AND k.table_name=t.table_name
        WHERE t.constraint_type='PRIMARY KEY' AND c.table_schema=t.table_schema
-       AND c.table_name=t.table_name AND k.column_name=c.column_name)
+       AND c.table_name=t.table_name AND k.column_name=c.column_name)${metadata}
      FROM information_schema.columns c WHERE ${scope(pg, 'c.')}
        AND c.table_schema=${marks[0]} AND c.table_name=${marks[1]} ORDER BY c.ordinal_position`, [schema, table]);
-  return rows;
+  return details ? rows.map(row=>[...row.slice(0,4),Object.fromEntries(properties.map((name,index)=>[name,row[index+4]]))]) : rows;
 }
 
 export async function relations({query, pg}) {
@@ -178,7 +183,7 @@ export async function relations({query, pg}) {
 }
 
 export async function tableData(db, schema, table, offset, limit, view = {filters:[]}) {
-  const definition = await columns(db, schema, table);
+  const definition = await columns(db, schema, table, true);
   if (!definition.length) return null;
   const quote = value => identifier(db.pg, value);
   const args = [];

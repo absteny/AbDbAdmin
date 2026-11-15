@@ -6,8 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
 import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount, objectCommand } from './native-tools.mjs';
-import { schemaStatement, tableDefinition, columnTypes, tableEngines } from './schema-editor.mjs';
-import { demoStructure, demoRows } from './demo.mjs';
+import { schemaStatement, tableDefinition, columnTypes, tableEngines, postgresColumnTypes, postgresTableDefinition, postgresColumnStatement } from './schema-editor.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
 
 process.umask(0o077);
@@ -32,7 +31,6 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS connections (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, engine TEXT NOT NULL, secret TEXT NOT NULL
   );
-  CREATE UNIQUE INDEX IF NOT EXISTS singleton_demo ON connections(engine) WHERE engine='demo';
   CREATE TABLE IF NOT EXISTS permissions (
     user_id INTEGER REFERENCES users ON DELETE CASCADE,
     connection_id INTEGER REFERENCES connections ON DELETE CASCADE,
@@ -220,8 +218,8 @@ function configuration(input, previous) {
 }
 function access(user, id) {
   const record = user.admin
-    ? database.prepare("SELECT *, 'admin' AS level FROM connections WHERE id=?").get(id)
-    : database.prepare('SELECT c.*, p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE c.id=? AND p.user_id=?').get(id,user.id);
+    ? database.prepare("SELECT *, 'admin' AS level FROM connections WHERE id=? AND engine<>'demo'").get(id)
+    : database.prepare('SELECT c.*, p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE c.id=? AND p.user_id=? AND c.engine<>?').get(id,user.id,'demo');
   requireValue(record, 'Подключение недоступно', 404);
   return record;
 }
@@ -389,7 +387,6 @@ async function api(req, res, url, event) {
     if (input.id!==undefined && input.id!==null) {
       requireValue(Number.isSafeInteger(input.id));
       const record=access(user,input.id);
-      requireValue(record.engine!=='demo','Демо доступно только для чтения',403);
       previous=reveal(record.secret);
     }
     return testConnection(configuration({...input,ca:input.ca ?? previous?.ca},previous));
@@ -401,14 +398,6 @@ async function api(req, res, url, event) {
       ? database.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 51').all()
       : database.prepare('SELECT * FROM audit WHERE id<? ORDER BY id DESC LIMIT 51').all(before);
     return {entries:entries.slice(0,50),next:entries.length>50 ? entries[49].id : null};
-  }
-  if (resource === 'demo' && method === 'POST') {
-    event.action = 'demo.enable';
-    requireValue(user.admin,'Требуются права администратора',403);
-    database.prepare("INSERT OR IGNORE INTO connections(name,engine,secret) VALUES ('Sample Store','demo','')").run();
-    const demo = database.prepare("SELECT id FROM connections WHERE engine='demo'").get();
-    event.connection = demo.id;
-    return demo;
   }
   if (resource === 'session' && method === 'GET') return {...user,advancedUrl:advancedUrl(user),sourceIp:user.admin?sourceIp:null};
   if (resource === 'logout' && method === 'POST') {
@@ -454,9 +443,8 @@ async function api(req, res, url, event) {
       const {connection,level} = await body(req);
       event.connection = Number.isSafeInteger(connection) ? connection : null;
       requireValue(Number.isSafeInteger(connection) && [null,'view','edit','sql'].includes(level));
-      const targetConnection=database.prepare('SELECT engine FROM connections WHERE id=?').get(connection);
+      const targetConnection=database.prepare('SELECT 1 FROM connections WHERE id=? AND engine<>?').get(connection,'demo');
       requireValue(targetConnection,'Подключение недоступно',404);
-      requireValue(targetConnection.engine!=='demo' || level===null || level==='view','Демо доступно только для чтения',403);
       if (level) database.prepare('INSERT INTO permissions VALUES (?,?,?) ON CONFLICT(user_id,connection_id) DO UPDATE SET level=excluded.level').run(id,connection,level);
       else database.prepare('DELETE FROM permissions WHERE user_id=? AND connection_id=?').run(id,connection);
       return {};
@@ -475,9 +463,9 @@ async function api(req, res, url, event) {
     if (action==='rows' && method==='POST') event.action = 'row.write';
     if (action==='csv' && method==='GET') event.action = 'csv.export';
     if (!id && method === 'GET') {
-      const entries = user.admin ? database.prepare("SELECT id,name,engine,secret,'admin' AS level FROM connections ORDER BY name").all()
-        : database.prepare('SELECT c.id,c.name,c.engine,c.secret,p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE p.user_id=? ORDER BY c.name').all(user.id);
-      return entries.map(({secret,...entry})=>({...entry,production:entry.engine!=='demo' && Boolean(reveal(secret).production)}));
+      const entries = user.admin ? database.prepare("SELECT id,name,engine,secret,'admin' AS level FROM connections WHERE engine<>'demo' ORDER BY name").all()
+        : database.prepare('SELECT c.id,c.name,c.engine,c.secret,p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE p.user_id=? AND c.engine<>? ORDER BY c.name').all(user.id,'demo');
+      return entries.map(({secret,...entry})=>({...entry,production:Boolean(reveal(secret).production)}));
     }
     if (!id && method === 'POST') {
       requireValue(user.admin,'Требуются права администратора',403);
@@ -490,7 +478,6 @@ async function api(req, res, url, event) {
     if (id) {
       const record = access(user,id);
       if (action === 'settings') {
-        requireValue(record.engine!=='demo','Демо доступно только для чтения',403);
         requireValue(user.admin,'Требуются права администратора',403);
         if (method === 'GET') return publicProfile(reveal(record.secret));
         if (method === 'PUT') {
@@ -508,8 +495,7 @@ async function api(req, res, url, event) {
         database.prepare('DELETE FROM connections WHERE id=?').run(id);
         return {};
       }
-      const demo = record.engine==='demo';
-      const profile = demo ? null : reveal(record.secret);
+      const profile = reveal(record.secret);
       const mysql = ['mysql','mariadb'].includes(record.engine);
       if (action==='sql-script' && method==='POST') {
         requireValue(user.admin && mysql,'Требуются права администратора',403);
@@ -628,6 +614,38 @@ async function api(req, res, url, event) {
         requireValue(result,'Для импорта нужна таблица InnoDB и совпадающие названия столбцов');
         return apply?result:{...result,confirmation:expected};
       }
+      if (action==='structure-editor' && record.engine==='postgres') {
+        requireValue(user.admin,'Требуются права администратора',403);
+        if (method==='GET') {
+          const schema=url.searchParams.get('schema'), table=url.searchParams.get('table');
+          if (!table) return {columnTypes:postgresColumnTypes};
+          requireValue(schema && schema.length<=63 && table.length<=63);
+          const definition=await remote(profile,db=>postgresTableDefinition(db,schema,table));
+          requireValue(definition,'Таблица недоступна',404);
+          return definition;
+        }
+        if (method==='POST') {
+          const input=await body(req);
+          requireValue(['rename-column','modify-column'].includes(input.operation) &&
+            [input.schema,input.table].every(value=>typeof value==='string' && value.length>0 && value.length<=63));
+          return remote(profile,async db=>{
+            const definition=await postgresTableDefinition(db,input.schema,input.table);
+            let sql;
+            try {sql=postgresColumnStatement(input,definition);}
+            catch (error) {
+              if (!(error instanceof TypeError)) throw error;
+              throw new RequestError(400,'Проверьте заполнение полей');
+            }
+            requireValue(sql,'Для этой таблицы или столбца изменение недоступно в редакторе',409);
+            const confirmation=createHmac('sha256',key).update(JSON.stringify([user.id,record.id,record.secret,sql,definition])).digest('hex');
+            if (input.preview===true) return {sql,confirmation};
+            requireValue(input.confirmation===confirmation,'Сначала откройте предпросмотр изменений',409);
+            event.action='schema.change';
+            await db.query(sql);
+            return {};
+          });
+        }
+      }
       if (action==='structure-editor') {
         requireValue(user.admin && ['mysql','mariadb'].includes(record.engine),'Требуются права администратора',403);
         if (method==='GET') {
@@ -663,10 +681,10 @@ async function api(req, res, url, event) {
         }
       }
       if (action === 'schema' && method === 'GET') {
-        return demo ? demoStructure() : remote(profile,async db=>({tables:await structure(db,{catalog:true}),relations:await relations(db)}));
+        return remote(profile,async db=>({tables:await structure(db,{catalog:true}),relations:await relations(db)}));
       }
       if (action === 'sql' && method === 'POST') {
-        requireValue(!demo && ['sql','admin'].includes(record.level),'Нет доступа к SQL',403);
+        requireValue(['sql','admin'].includes(record.level),'Нет доступа к SQL',403);
         const {sql} = await body(req);
         requireValue(typeof sql === 'string' && sql.trim() && sql.length <= 65000,'Введите SQL-запрос');
         return remote(profile,async db=>rowResult(await db.query(sql,[],201)));
@@ -706,7 +724,7 @@ async function api(req, res, url, event) {
           requireValue(Number.isSafeInteger(offset) && offset >= 0 && offset <= 1000000);
           const limit = action==='csv'?501:51;
           const view=readView(url);
-          const result = demo ? demoRows(schema,table,offset,limit,view) : await remote(profile, db=>tableData(db,schema,table,offset,limit,view));
+          const result = await remote(profile, db=>tableData(db,schema,table,offset,limit,view));
           requireValue(!result?.invalidView,'Столбец недоступен');
           requireValue(result,'Таблица недоступна',404);
           if (action === 'csv') {
@@ -719,7 +737,7 @@ async function api(req, res, url, event) {
             return;
           }
           const page = rowResult(result,50);
-          if (!demo && record.level!=='view') {
+          if (record.level!=='view') {
             const visible=result.rows.slice(0,50);
             page.snapshots=visible.map(row=>rowToken(record,schema,table,row));
             page.limitedCells=visible.map(row=>row.map(value=>Buffer.isBuffer(value) || typeof value==='string' && value.length>4096));
@@ -734,7 +752,7 @@ async function api(req, res, url, event) {
           return page;
         }
         if (method === 'POST' && action === 'rows') {
-          requireValue(!demo && record.level !== 'view','Нет права изменять строки',403);
+          requireValue(record.level !== 'view','Нет права изменять строки',403);
           const input = await body(req);
           if (['insert','update','delete'].includes(input.action)) event.action='row.'+input.action;
           return remote(profile,db=>changeRow(db,schema,table,input,record));
