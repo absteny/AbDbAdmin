@@ -388,10 +388,40 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
     assert.match((await request(csv,'GET',undefined,reader)).body,/"1","'=changed"/);
     await request(rows,'POST',{action:'insert',values:{id:2,label:'new'}},reader);
     await request(rows,'POST',{action:'delete',key:{id:2}},reader);
+    await request(rows,'POST',{action:'insert',values:{id:2,label:'two'}},reader);
+    const batchPage=(await request(rows,'GET',undefined,reader)).body;
+    const selected=batchPage.rows.map(([id],index)=>({key:{id},snapshot:batchPage.snapshots[index]}));
+    await request(rows,'POST',{action:'update',rows:[selected[0],{...selected[1],snapshot:'0'.repeat(64)}],
+      values:{label:'batch'}},reader,409);
+    assert.deepEqual((await request(rows,'GET',undefined,reader)).body.rows,[[2,'two'],[1,'=changed']]);
+    await request(rows,'POST',{action:'update',rows:selected,values:{label:'batch'}},reader);
+    const updated=(await request(rows,'GET',undefined,reader)).body;
+    assert.deepEqual(updated.rows,[[2,'batch'],[1,'batch']]);
+    await request(rows,'POST',{action:'delete',rows:[{key:{id:2},snapshot:updated.snapshots[0]}]},reader);
     await request(conn+'/sql','POST',{sql:'SELECT 1'},reader,403);
     await request(userPermission,'PUT',{connection:id,level:'sql'},admin);
     assert.deepEqual((await request(conn+'/sql','POST',{sql:'SELECT id FROM clay_parent'},reader)).body.rows,[[1]]);
     await request(conn+'/sql','POST',{sql:'SELECT 1; SELECT 2'},reader,502);
+    const duplicateTable='clay_duplicate_test';
+    const duplicateRows=conn+'/rows?schema='+schema+'&table='+duplicateTable;
+    await withDatabase(profile,async db=>{
+      await db.query('DROP TABLE IF EXISTS '+duplicateTable);
+      await db.query('CREATE TABLE '+duplicateTable+(pg?' (id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, label VARCHAR(80))':
+        ' (id INT AUTO_INCREMENT PRIMARY KEY, label VARCHAR(80)) ENGINE=InnoDB'));
+      await db.query("INSERT INTO "+duplicateTable+" (label) VALUES ('copy me')");
+    });
+    const original=(await request(duplicateRows,'GET',undefined,reader)).body;
+    await request(duplicateRows,'POST',{action:'copy',rows:[{key:{id:1},snapshot:original.snapshots[0]}]},reader);
+    assert.deepEqual((await request(duplicateRows,'GET',undefined,reader)).body.rows,[[2,'copy me'],[1,'copy me']]);
+    const combined={schema,table:duplicateTable,operation:pg?'edit-column':'modify-column',column:{
+      name:'label',newName:'description',type:'VARCHAR(96)',nullable:true,defaultValue:'initial',comment:'Combined edit',
+    }};
+    const {body:combinedPreview}=await request(editor,'POST',{...combined,preview:true},admin);
+    await request(editor,'POST',{...combined,confirmation:combinedPreview.confirmation},admin);
+    await withDatabase(profile,async db=>{
+      assert.deepEqual((await db.query('SELECT description FROM '+duplicateTable+' ORDER BY id')).rows,[['copy me'],['copy me']]);
+    });
+    await withDatabase(profile,db=>db.query('DROP TABLE '+duplicateTable));
     await request(userPermission,'PUT',{connection:id,level:null},admin);
     await request(rows,'GET',undefined,reader,404);
     await request(conn,'DELETE',undefined,admin);

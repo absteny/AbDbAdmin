@@ -89,10 +89,15 @@ export function schemaStatement(database,input,definition) {
       if (auto && (options.nullable || !/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT)\b/.test(type))) return null;
       if (current[4]!=null && !/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT|DECIMAL|FLOAT|DOUBLE)\b/.test(type)) return null;
       if (current[6]!=null && !character) return null;
-      const defaultValue=current[4] ?? current[6];
-      return alter+'MODIFY COLUMN '+quote(options.name)+' '+type+charset+
+      const defaultValue=Object.hasOwn(options,'defaultValue')
+        ?options.defaultValue===null?null:columnLiteral(options.defaultValue)
+        :current[4] ?? current[6];
+      const position=options.after===undefined?'':options.after===null?' FIRST':' AFTER '+quote(options.after);
+      const rename=options.newName && options.newName!==options.name;
+      const declaration=rename?'CHANGE COLUMN '+quote(options.name)+' '+quote(options.newName):'MODIFY COLUMN '+quote(options.name);
+      return alter+declaration+' '+type+charset+
         (options.nullable?' NULL':' NOT NULL')+(defaultValue==null?'':' DEFAULT '+defaultValue)+
-        (auto?' AUTO_INCREMENT':'')+(comment!==undefined?' COMMENT '+columnLiteral(comment):'');
+        (auto?' AUTO_INCREMENT':'')+(comment!==undefined?' COMMENT '+columnLiteral(comment):'')+position;
     }
     case 'change-engine':
       if (!tableEngines.includes(input.engine)) throw new TypeError('Invalid engine');
@@ -193,6 +198,23 @@ function postgresType(value) {
   if (type==='NUMERIC' ? precision<1 || precision>1000 || places>precision
     : scale || (type==='VARCHAR'?precision<1:precision>6)) return null;
   return value;
+}
+
+export function postgresColumnEdit(input,definition) {
+  const option=input.column;
+  if (!option || typeof option.name!=='string') throw new TypeError('Invalid column');
+  const statements=[];
+  function add(operation,properties) {
+    const statement=postgresColumnStatement({...input,operation,columnName:option.name,...properties},definition);
+    if (!statement) throw new TypeError('Invalid column property');
+    statements.push(statement);
+  }
+  if (Object.hasOwn(option,'type')) add('modify-column',{column:option});
+  else if (Object.hasOwn(option,'nullable')) add('set-column-nullability',{nullable:option.nullable});
+  if (Object.hasOwn(option,'defaultValue')) add('set-column-default',{defaultValue:option.defaultValue});
+  if (Object.hasOwn(option,'comment')) add('set-column-comment',{comment:option.comment});
+  if (option.newName && option.newName!==option.name) add('rename-column',{name:option.newName});
+  return statements.length?statements:null;
 }
 
 export function postgresColumnStatement(input,definition) {

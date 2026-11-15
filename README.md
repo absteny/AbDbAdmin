@@ -1,7 +1,7 @@
 # AbDbAdmin
 
 A self-hosted administration panel for PostgreSQL, MySQL, and MariaDB. Browse
-and edit tables, run SQL, and explore foreign keys in an interactive 3D schema.
+and edit tables, run SQL, and explore foreign keys in an interactive relationship map.
 Manage database access per user and review administrative activity in the audit log.
 
 ## 1. Install on your computer
@@ -123,7 +123,21 @@ the engine, the editor also supports comments, character sets, and
 auto-increment controls. Use **Advanced SQL editing** from the pencil
 for native definitions such as generated columns or custom expressions.
 Double-click an editable row, or use **Edit**, to open its editor.
-Both editors require a review before applying changes.
+Both editors require a review before applying changes. The column form
+lists fields vertically and shows controls that apply to the selected type.
+
+Expand **Import and export** to see whole-table transfer options. Use the
+checkboxes to copy or export the displayed values of selected rows. With
+write access, you can set one field across selected rows, duplicate rows
+with an automatically generated primary key, or delete selected rows. A
+batch supports up to 50 rows on PostgreSQL and InnoDB tables. Batch
+writes require a primary key and a matching snapshot for every row. If a
+record has changed, the batch rolls back.
+
+Open **3D schema** and select a table to see incoming references on the
+left and outgoing references on the right. Choose a related table to
+focus the map on it, or use **Open rows** to browse its data. Use **3D tilt**
+to switch to a perspective view.
 
 Browsing starts with primary-key columns in descending order. If there is no
 primary key, the default uses the first supported sortable column, when
@@ -134,7 +148,7 @@ when rows change while you are scrolling.
 
 ### Filter and sort rows
 
-Open a table and use **Filters and sorting** above the rows. Add up to eight conditions
+Open a table and expand **Filters and sorting** above the rows. Add up to eight conditions
 joined with AND. **Contains** searches within the text representation of a
 value and treats percent signs and underscores literally. **Equals** compares
 text using the database's comparison rules. You can also filter by NULL and

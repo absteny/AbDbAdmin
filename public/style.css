@@ -260,3 +260,44 @@ textarea.sql-console-input::placeholder{color:#799a9b}
 @media(max-width:480px){
   .compact-filters .filter-controls label{flex:1 1 9rem}
 }
+
+.browse-tools{align-items:flex-start;gap:.4rem}
+.browse-tools>details{min-width:0}
+.browse-tools>details[open]{flex:1 1 100%;order:1}
+.browse-tools summary,.browse-tools>button{padding:.38rem .55rem;border-radius:.55rem;font-size:.8rem}
+.browse-tools summary{cursor:pointer;background:#e4f4f1;color:var(--accent);font-weight:650}
+.browse-tools details[open] summary{margin-bottom:.35rem}
+.browse-tools .row-transfer{gap:.4rem}
+.row-data-grid .row-choice{min-width:2rem;width:2rem;text-align:center;padding:.3rem}
+.row-choice input{width:1rem;height:1rem;accent-color:#087e83}
+.row-data-grid tr:has(.row-choice input:checked){background:#d1eeea}
+.selection-bar{position:sticky;top:0;z-index:2;gap:.4rem;padding:.35rem;background:var(--surface);border-bottom:1px solid var(--line)}
+.selection-bar button{padding:.3rem .55rem;font-size:.8rem}
+.column-form-fields{display:grid;grid-template-columns:minmax(0,1fr);gap:.55rem}
+.column-form-fields label{min-width:0}
+.column-native summary{cursor:pointer;color:var(--accent)}
+.relationship-stage{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.9fr) minmax(0,1fr);gap:.8rem;
+  padding:clamp(.65rem,2vw,1.25rem);border:1px solid var(--line);border-radius:16px;background:#e5f6f2}
+.relationship-lane,.relationship-focus{min-width:0;align-content:start}
+.relationship-stage h3{margin:0;color:var(--muted);font-size:.84rem}
+.relationship-nodes{display:grid;gap:.7rem}
+.relationship-edge{display:grid;align-items:center;gap:.35rem}
+.relationship-edge.incoming{grid-template-columns:minmax(0,1fr) auto}
+.relationship-edge.outgoing{grid-template-columns:auto minmax(0,1fr)}
+.relationship-edge.outgoing span{order:-1}
+.relationship-edge span{font-size:1.3rem;color:#087e83}
+.relationship-card{display:grid;gap:.3rem;padding:.55rem .65rem;border:1px solid #aed8d0;border-radius:.68rem;background:#f4fffb;
+  box-shadow:0 .23rem #a5ccc7,0 .37rem .55rem #35615b33;overflow-wrap:anywhere}
+.relationship-card.current{background:#c9efe3;border-color:#75beb0;box-shadow:0 .3rem #69ad9f,0 .48rem 1rem #3c82764a}
+.relationship-card button{justify-self:start;text-align:left;background:transparent;padding:.25rem;color:var(--accent);overflow-wrap:anywhere}
+.relationship-card .relationship-name{font-weight:750}
+.relationship-card .relationship-open{font-size:.75rem}
+@media(max-width:680px){
+  .relationship-stage{grid-template-columns:minmax(0,1fr)}
+  .relationship-focus{order:-1}
+  .relationship-edge span{display:none}
+  .relationship-edge.incoming,.relationship-edge.outgoing{grid-template-columns:minmax(0,1fr)}
+}
+.relationship-stage.has-depth{transform:perspective(1050px) rotateX(12deg);transform-origin:top;transform-style:preserve-3d}
+.relationship-stage.has-depth .relationship-card{transform:translateZ(10px)}
+.relationship-stage.has-depth .relationship-card.current{transform:translateZ(24px)}

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
 import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount, objectCommand } from './native-tools.mjs';
-import { schemaStatement, tableDefinition, columnTypes, tableEngines, postgresColumnTypes, postgresTableDefinition, postgresColumnStatement, mysqlTypeFamilies } from './schema-editor.mjs';
+import { schemaStatement, tableDefinition, columnTypes, tableEngines, postgresColumnTypes, postgresTableDefinition, postgresColumnStatement, postgresColumnEdit, mysqlTypeFamilies } from './schema-editor.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
 
 process.umask(0o077);
@@ -304,13 +304,13 @@ function readView(url) {
 function rowToken(record,schema,table,row) {
   return createHmac('sha256',key).update(JSON.stringify([record.id,record.secret,schema,table,row])).digest('hex');
 }
-async function changeRow(db, schema, table, input, record) {
-  const fields = await columns(db,schema,table);
+async function changeRow(db, schema, table, input, record, batchFields) {
+  const fields = batchFields ?? await columns(db,schema,table);
   requireValue(fields.length, 'Таблица недоступна', 404);
-  const tableType = await db.query(
+  const tableType = batchFields ? null : await db.query(
     db.pg ? 'SELECT table_type FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2'
       : 'SELECT table_type FROM information_schema.tables WHERE table_schema=? AND table_name=?', [schema,table]);
-  requireValue(tableType.rows[0]?.[0] === 'BASE TABLE','Операции со строками доступны для обычных таблиц',403);
+  requireValue(batchFields || tableType.rows[0]?.[0] === 'BASE TABLE','Операции со строками доступны для обычных таблиц',403);
   const keys = fields.filter(field => field[3]).map(field => field[0]);
   const names = fields.map(field => field[0]);
   const op = input.action;
@@ -339,13 +339,67 @@ async function changeRow(db, schema, table, input, record) {
   if (op==='insert' || input.snapshot===undefined) return {affected:(await db.query(sql,args)).affected};
   requireValue(typeof input.snapshot==='string' && /^[a-f0-9]{64}$/.test(input.snapshot));
   const condition=keys.map((name,index)=>quote(name)+'='+(db.pg?'$'+(index+1):'?')).join(' AND ');
-  return db.transaction(async ()=>{
+  const write=async ()=>{
     const current=await db.query('SELECT * FROM '+target+' WHERE '+condition+' FOR UPDATE',keys.map(name=>input.key[name]),1);
     requireValue(current.rows.length && rowToken(record,schema,table,current.rows[0])===input.snapshot,
       'Строка изменилась. Обновите таблицу перед повтором.',409);
     return {affected:(await db.query(sql,args)).affected};
+  };
+  return batchFields?write():db.transaction(write);
+}
+
+async function changeSelectedRows(db,schema,table,input,record) {
+  const copy=input.action==='copy';
+  requireValue(['update','delete','copy'].includes(input.action) && Array.isArray(input.rows) &&
+    input.rows.length>0 && input.rows.length<=50 && input.rows.every(row=>row && /^[a-f0-9]{64}$/.test(row.snapshot)));
+  const quote=value=>identifier(db.pg,value);
+  const target=quote(schema)+'.'+quote(table);
+  return db.transaction(async ()=>{
+    const info=await db.query(db.pg
+      ? 'SELECT table_type FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2'
+      : 'SELECT table_type,engine FROM information_schema.tables WHERE table_schema=? AND table_name=?',[schema,table]);
+    requireValue(info.rows[0]?.[0]==='BASE TABLE' && (db.pg || /^innodb$/i.test(info.rows[0]?.[1])),
+      'Групповые изменения требуют таблицу PostgreSQL или InnoDB',409);
+    // Hold a metadata lock while validating the engine and writing the batch.
+    await db.query('SELECT 1 FROM '+target+' WHERE 1=0');
+    if (!db.pg) {
+      const engine=await db.query('SELECT engine FROM information_schema.tables WHERE table_schema=? AND table_name=?',[schema,table]);
+      requireValue(/^innodb$/i.test(engine.rows[0]?.[0]),'Групповые изменения требуют таблицу PostgreSQL или InnoDB',409);
+    }
+    const fields=await columns(db,schema,table,copy);
+    requireValue(fields.length,'Таблица недоступна',404);
+    const keys=fields.filter(column=>column[3]);
+    requireValue(keys.length,'Нужен полный первичный ключ');
+    let copyNames, condition;
+    if (copy) {
+      const automatic=metadata=>db.pg
+        ? metadata.is_identity==='YES' || /^nextval\(/.test(metadata.column_default ?? '')
+        : /\bauto_increment\b/i.test(metadata.extra ?? '');
+      requireValue(keys.some(column=>automatic(column[4])),'Для дублирования нужен автоматически создаваемый первичный ключ',409);
+      copyNames=fields.filter(column=>!automatic(column[4]) && !column[4].generation_expression).map(([name])=>quote(name)).join(', ');
+      condition=keys.map(([name],i)=>quote(name)+'='+(db.pg?'$'+(i+1):'?')).join(' AND ');
+    }
+    let affected=0;
+    for (const {key,snapshot} of input.rows) {
+      if (!copy) {
+        const result=await changeRow(db,schema,table,{action:input.action,key,snapshot,values:input.values},record,fields);
+        affected+=result.affected ?? 0;
+        continue;
+      }
+      const args=keys.map(([name])=>key?.[name]);
+      requireValue(args.every(value=>['string','number','boolean'].includes(typeof value)),'Нужен полный первичный ключ');
+      const current=await db.query('SELECT * FROM '+target+' WHERE '+condition+' FOR UPDATE',args,1);
+      requireValue(current.rows.length && rowToken(record,schema,table,current.rows[0])===snapshot,
+        'Строка изменилась. Обновите таблицу перед повтором.',409);
+      const insert=copyNames?' ('+copyNames+') SELECT '+copyNames+' FROM '+target+' WHERE '+condition:
+        db.pg?' DEFAULT VALUES':' () VALUES ()';
+      const result=await db.query('INSERT INTO '+target+insert,copyNames?args:[]);
+      affected+=result.affected ?? 0;
+    }
+    return {affected};
   });
 }
+
 function cell(value) {
   let text = value == null ? '' : String(value);
   if (/^[\s\uFEFF]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text)) text = "'" + text;
@@ -626,12 +680,17 @@ async function api(req, res, url, event) {
         }
         if (method==='POST') {
           const input=await body(req);
-          requireValue(['rename-column','modify-column','set-column-default','set-column-comment','set-column-nullability'].includes(input.operation) &&
+          requireValue(['rename-column','modify-column','set-column-default','set-column-comment','set-column-nullability','edit-column'].includes(input.operation) &&
             [input.schema,input.table].every(value=>typeof value==='string' && value.length>0 && value.length<=63));
           return remote(profile,async db=>{
             const definition=await postgresTableDefinition(db,input.schema,input.table);
-            let sql;
-            try {sql=postgresColumnStatement(input,definition);}
+            let sql, statements;
+            try {
+              if (input.operation==='edit-column') {
+                statements=postgresColumnEdit(input,definition);
+                sql=statements?.join(';\n');
+              } else sql=postgresColumnStatement(input,definition);
+            }
             catch (error) {
               if (!(error instanceof TypeError)) throw error;
               throw new RequestError(400,'Проверьте заполнение полей');
@@ -641,7 +700,8 @@ async function api(req, res, url, event) {
             if (input.preview===true) return {sql,confirmation};
             requireValue(input.confirmation===confirmation,'Сначала откройте предпросмотр изменений',409);
             event.action='schema.change';
-            await db.query(sql);
+            if (statements) await db.transaction(async ()=>{for (const statement of statements) await db.query(statement);});
+            else await db.query(sql);
             return {};
           });
         }
@@ -762,8 +822,8 @@ async function api(req, res, url, event) {
         if (method === 'POST' && action === 'rows') {
           requireValue(record.level !== 'view','Нет права изменять строки',403);
           const input = await body(req);
-          if (['insert','update','delete'].includes(input.action)) event.action='row.'+input.action;
-          return remote(profile,db=>changeRow(db,schema,table,input,record));
+          if (['insert','update','delete','copy'].includes(input.action)) event.action='row.'+input.action;
+          return remote(profile,db=>input.rows===undefined?changeRow(db,schema,table,input,record):changeSelectedRows(db,schema,table,input,record));
         }
       }
     }

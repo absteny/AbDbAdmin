@@ -429,7 +429,7 @@ const auditActions = {
   'user.create':'Создание пользователя','user.delete':'Удаление пользователя','permission.change':'Изменение прав',
   'connection.create':'Создание подключения','connection.update':'Изменение подключения','connection.delete':'Удаление подключения',
   'sql.execute':'Выполнение SQL','row.write':'Операция со строкой','row.insert':'Добавление строки',
-  'row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры','csv.import':'Импорт CSV','sql.script':'Выполнение SQL-скрипта','sql.export':'Экспорт SQL','table.maintenance':'Обслуживание таблицы',
+  'row.copy':'Дублирование строк','row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры','csv.import':'Импорт CSV','sql.script':'Выполнение SQL-скрипта','sql.export':'Экспорт SQL','table.maintenance':'Обслуживание таблицы',
   'db-account.create':'Создание пользователя СУБД','db-account.password':'Смена пароля пользователя СУБД',
   'db-account.drop':'Удаление пользователя СУБД','db-account.grant':'Выдача прав СУБД','db-account.revoke':'Отзыв прав СУБД','database.export':'Выгрузка базы',
   'db-object.create':'Создание события','db-object.drop':'Удаление объекта',
@@ -1041,10 +1041,7 @@ function databaseStructure(target) {
     if (n>=1024) return number.format(Math.round(n/102.4)/10)+' KiB';
     return number.format(n)+' B';
   };
-  function action(title,icon,fn,style='') {
-    return e('button',{type:'button',class:'catalog-action '+style,onclick:fn},
-      e('span',{'aria-hidden':'true',class:'catalog-icon'},icon),t(title));
-  }
+
   const bulkChoices=[
     ['CHECK',t('Проверить')],['ANALYZE',t('Обновить статистику')],['OPTIMIZE',t('Оптимизировать')],
     ['truncate-table',t('Очистить')],['drop-table',t('Удалить')],
@@ -1119,21 +1116,18 @@ function databaseStructure(target) {
       }
       update();
     });
-    const headers=[t('Таблица'),t('Действия'),...(mysql?[t('Строки'),t('Тип'),t('Сравнение'),t('Размер'),t('Фрагментация')]:[t('Схема'),t('Тип')])];
+    const headers=[t('Таблица'),...(mysql?[t('Строки'),t('Тип'),t('Сравнение'),t('Размер'),t('Фрагментация')]:[t('Схема'),t('Тип')])];
     results.replaceChildren(e('table',{class:'structure-grid'},
       e('thead',{},e('tr',{},e('th',{scope:'col',class:'catalog-choice'},selectAll),
         headers.map(title=>e('th',{scope:'col'},title)))),
       e('tbody',{},visible.map(table=>{
         const [schema,name,type,rows,engine,collation,size,free]=table;
         const key=tableKey(table);
-        const base=type==='BASE TABLE';
         const selected=field('tableSelected','checkbox','1',{'aria-label':name,checked:checked.has(key)});
         selected.addEventListener('change',()=>{if (selected.checked) checked.add(key);else checked.delete(key);update();});
         return e('tr',{},
           e('td',{class:'catalog-choice'},selected),
           e('td',{class:'catalog-name'},button(name,()=>openWorkspaceTable(table),'table-link',{title:schema+'.'+name})),
-          e('td',{class:'catalog-action-cell'},div('row catalog-actions',
-            canEdit && base?action('Структура','▤',()=>openWorkspaceTable(table,'schema-editor')):null)),
           ...(mysql?[rows==null?'—':number.format(Number(rows)),engine ?? t('Представление БД'),collation ?? '—',
             size==null?'—':bytes(size),Number(free)>0?bytes(free):'—']:[schema,type]).map(value=>e('td',{class:'catalog-meta'},value)));
       }))));
@@ -1210,10 +1204,95 @@ async function loadTables(target,stamp,schemaReady) {
   const actionCell=page=>showActions ? (rowActions(page) ?? (()=>'—')) : null;
   const nativeAdmin=state.user.admin && editable && ['mysql','mariadb'].includes(state.connection.engine);
   const columnMetadata=new Map(data.definition.map(column=>[column[0],column]));
+  const picks=new Map();
+  const selectAll=field('selectRows','checkbox','1',{'aria-label':t('Выбрать загруженные строки')});
+  const selectionCount=e('small',{role:'status'});
+  const textCell=value=>value==null?'':String(value);
+  function batchText(csv) {
+    const rows=[data.columns,...selectedRows().map(item=>item.row)];
+    return rows.map(row=>row.map(value=>{
+      let text=textCell(value);
+      if (/^[\s\uFEFF]*[=+@-]|^[\t\r\n]/.test(text)) text="'"+text;
+      return csv?'"'+text.replaceAll('"','""')+'"':text.replace(/[\t\r\n]/g,' ');
+    }).join(csv?',':'\t')).join('\r\n');
+  }
+  const copy=button(t('В буфер'),click(async()=>{await navigator.clipboard.writeText(batchText(false));toast(t('Скопировано'));}));
+  const exportRows=button(t('Экспорт CSV'),()=>{
+    const url=URL.createObjectURL(new Blob(['\uFEFF',batchText(true)],{type:'text/csv;charset=utf-8'}));
+    const link=e('a',{href:url,download:'abdbadmin-selected.csv'});
+    link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });
+  const duplicate=button(t('Дублировать'),()=>batchEditor('copy'));
+  const editSelected=button(t('Изменить'),()=>batchEditor('update'));
+  const deleteSelected=button(t('Удалить'),()=>batchEditor('delete'),'danger');
+  const batchBar=div('row selection-bar',selectionCount,copy,exportRows,editSelected,duplicate,deleteSelected,
+    button(t('Снять выбор'),()=>{for(const item of picks.values()) item.checkbox.checked=false;selectionChanged();}));
+  function selectedRows() {return [...picks.values()].filter(item=>item.checkbox.checked);}
+  function selectionChanged() {
+    const rows=selectedRows();
+    selectAll.checked=picks.size>0 && rows.length===picks.size;
+    selectAll.indeterminate=rows.length>0 && !selectAll.checked;
+    selectAll.disabled=!picks.size;
+    batchBar.hidden=!rows.length;
+    selectionCount.textContent=t('Выбрано строк: {count}',{count:rows.length});
+    selectionCount.title=rows.length>50?t('Групповые изменения: до 50 строк'):'';
+    const batchWritable=state.connection.engine==='postgres' || /^innodb$/i.test(state.table[4] ?? '');
+    deleteSelected.disabled=!batchWritable || rows.length>50 || !rows.every(item=>item.snapshot && item.key);
+    editSelected.disabled=deleteSelected.disabled || !data.definition.some(column=>!column[3]);
+    duplicate.disabled=deleteSelected.disabled || !data.definition.some(([, , , primary, meta])=>primary && meta &&
+      (meta.is_identity==='YES' || /^nextval\(/.test(meta.column_default ?? '') || /\bauto_increment\b/i.test(meta.extra ?? '')));
+    duplicate.title=duplicate.disabled?t('Для дублирования нужен автоматически создаваемый первичный ключ'):'';
+  }
+  selectAll.addEventListener('change',()=>{
+    for(const item of picks.values()) item.checkbox.checked=selectAll.checked;
+    selectionChanged();
+  });
+  function pickRow(page,row,index) {
+    const checkbox=field('pickRow','checkbox','1',{'aria-label':t('Выбрать строку')});
+    checkbox.addEventListener('change',selectionChanged);
+    const key=editable && !page.unsafeKey && page.definition.some(column=>column[3])?
+      Object.fromEntries(page.definition.filter(column=>column[3]).map(([name])=>[name,row[page.columns.indexOf(name)]])):null;
+    picks.set(checkbox,{checkbox,row,key,snapshot:page.snapshots?.[index]});
+    return checkbox;
+  }
+  function batchEditor(action) {
+    const rows=selectedRows();
+    const title=t({delete:'Удалить выбранные строки',update:'Изменить выбранные строки',copy:'Дублировать выбранные строки'}[action]);
+    const targets=rows.map(({key,snapshot})=>({key,snapshot}));
+    function review(values) {
+      openDialog(title,form([
+        e('p',{},t('Вы точно хотите внести эти изменения?')),
+        e('strong',{},state.table.join(' / ')+' · '+t('Выбрано строк: {count}',{count:rows.length})),
+        values?e('p',{},Object.entries(values).map(([name,value])=>name+' = '+(value ?? 'NULL')).join(', ')):null,
+        e('pre',{class:'schema-sql'},targets.map(({key})=>JSON.stringify(key)).join('\n')),
+      ],t('Подтвердить'),async()=>{
+        const result=await api(path,'POST',{action,rows:targets,values});
+        dialog.close();
+        toast(t('Затронуто строк: {count}',{count:result.affected}));
+        render();
+      }));
+    }
+    if (action!=='update') return review();
+    const columns=data.definition.filter(column=>!column[3]);
+    if (!columns.length) return;
+    const picker=select('column',columns.map(([name])=>[name,name]),columns[0][0]);
+    const input=field('value','text');
+    const useNull=field('null','checkbox','1');
+    function refresh() {
+      useNull.disabled=columns.find(([name])=>name===picker.value)[2]!=='YES';
+      if(useNull.disabled) useNull.checked=false;
+      input.disabled=useNull.checked;
+    }
+    picker.addEventListener('change',refresh);
+    useNull.addEventListener('change',refresh);
+    refresh();
+    openDialog(title,form([label(t('Столбец'),picker),label(t('Значение'),input),e('label',{class:'check'},useNull,'NULL')],
+      t('Предпросмотр изменений'),async values=>review({[values.column]:values.null?null:values.value})));
+  }
   const gridOptions=page=>({
     rowEdit:rowActions(page)?row=>rowDialog(page,path,row):null,
     header:name=>columnHeader(name,columnMetadata.get(name),state.user.admin && editable),
-    tableClass:'structure-grid row-data-grid',
+    tableClass:'structure-grid row-data-grid',selectAll,pick:(row,index)=>pickRow(page,row,index),
   });
   const grid=resultTable(data,actionCell(data),gridOptions(data));
   grid.classList.add('browsing-grid');
@@ -1221,6 +1300,7 @@ async function loadTables(target,stamp,schemaReady) {
   const loadButton=button(t('Загрузить ещё'),click(loadMore));
   const footer=div('row spread browse-end',count,loadButton);
   grid.append(footer);
+  selectionChanged();
   let offset=state.offset+data.rows.length, loading=false;
   let more=data.truncated && offset<=1000000;
   let observer;
@@ -1247,7 +1327,8 @@ async function loadTables(target,stamp,schemaReady) {
         return;
       }
       const tableBody=grid.querySelector('tbody');
-      tableBody.append(...resultTable(page,actionCell(page),{rowEdit:gridOptions(page).rowEdit}).querySelector('tbody').children);
+      tableBody.append(...resultTable(page,actionCell(page),{rowEdit:gridOptions(page).rowEdit,pick:gridOptions(page).pick}).querySelector('tbody').children);
+      selectionChanged();
       offset+=page.rows.length;
       more=page.truncated && page.rows.length>0 && offset<=1000000;
       updateStatus();
@@ -1269,12 +1350,14 @@ async function loadTables(target,stamp,schemaReady) {
   const csv = e('a',{href:'/api/'+route('csv')+'?'+rowParams()},t('CSV · до 500 строк'));
   const exportSql=nativeAdmin?e('a',{href:'/api/'+route('sql-export')+'?'+new URLSearchParams({table:state.table[1]})},t('Экспорт SQL')):null;
   target.append(div('catalog-panel browse-panel',
-    div('row spread browse-toolbar',
-      div('row row-transfer',csv,exportSql,nativeAdmin?button(t('Импорт CSV'),openCsvImport):null),
-      div('row',nativeAdmin?button(t('Обслуживание таблицы'),maintenanceDialog):null,
-        editable?button(t('Добавить строку'),()=>rowDialog(data,path),'primary'):null)),
-    div('browse-filters',filterControls(data.columns)),
-    grid));
+    div('row browse-tools',
+      e('details',{class:'browse-transfer'},e('summary',{},t('Импорт и экспорт')),
+        div('row row-transfer',csv,exportSql,nativeAdmin?button(t('Импорт CSV'),openCsvImport):null)),
+      e('details',{class:'browse-filters'},e('summary',{},t('Фильтры и сортировка')+
+        (currentTableView().filters.length?' · '+currentTableView().filters.length:'')),filterControls(data.columns)),
+      nativeAdmin?button(t('Обслуживание таблицы'),maintenanceDialog):null,
+      editable?button(t('Добавить строку'),()=>rowDialog(data,path),'primary'):null),
+    batchBar,grid));
   if (more && typeof IntersectionObserver==='function') {
     observer=new IntersectionObserver(entries=>{
       if (entries.some(entry=>entry.isIntersecting)) loadMore();
@@ -1283,12 +1366,13 @@ async function loadTables(target,stamp,schemaReady) {
   }
   stopRowLoading=()=>{observer?.disconnect();};
 }
-function resultTable(data,actions,{header,rowEdit,tableClass}={}) {
+function resultTable(data,actions,{header,rowEdit,tableClass,selectAll,pick}={}) {
   if (!data.columns.length) return e('p',{},data.affected==null?t('Запрос выполнен'):t('Затронуто строк: {count}',{count:data.affected}));
   return div('table-wrap',e('table',tableClass?{class:tableClass}:{},
-    e('thead',{},e('tr',{},data.columns.map(name=>e('th',{scope:'col'},header?header(name):name)),actions?e('th',{scope:'col'},t('Действия')):null)),
-    e('tbody',{},data.rows.map(row=>{
+    e('thead',{},e('tr',{},selectAll?e('th',{scope:'col',class:'row-choice'},selectAll):null,data.columns.map(name=>e('th',{scope:'col'},header?header(name):name)),actions?e('th',{scope:'col'},t('Действия')):null)),
+    e('tbody',{},data.rows.map((row,index)=>{
       const tr=e('tr',rowEdit?{class:'editable-row'}:{},
+        pick?e('td',{class:'row-choice'},pick(row,index)):null,
         row.map(value=>e('td',{},value==null?e('i',{},'NULL'):String(value))),
         actions?e('td',{class:'actions'},actions(row)):null);
       if (rowEdit) tr.addEventListener('dblclick',event=>{
@@ -1329,117 +1413,118 @@ async function editBrowseColumn(name,loaded) {
   const column=(definition.columnDetails ?? definition.columns).find(([current])=>current===name);
   if (!column) throw new Error(t('Столбец недоступен'));
   const [,type,nullable]=column;
+  const postgres=state.connection.engine==='postgres';
   const canModify=new Map(definition.columnChanges).get(name);
   const title=t('Изменить столбец')+' · '+name;
-  function operation(inputs,makeInput) {
-    const editor=form(inputs,t('Предпросмотр изменений'),async values=>{
-      const input={schema,table,...makeInput(values)};
-      const preview=await api(path,'POST',{...input,preview:true});
-      openDialog(t('Предпросмотр изменений'),form([
-        e('strong',{},[state.connection.name,schema,table].join(' / ')),
-        e('p',{},t('Вы точно хотите внести эти изменения?')),
-        e('pre',{class:'schema-sql'},preview.sql),
-        e('p',{},t('Изменения структуры могут применяться без возможности отката.')),
-      ],t('Подтвердить'),async ()=>{
-        await api(path,'POST',{...input,confirmation:preview.confirmation});
-        if (input.operation==='rename-column') {
-          const view=currentTableView();
-          const rename=rule=>rule.column===name?{...rule,column:input.name}:rule;
-          dialog.close();
-          state.schema=null;
-          applyTableView({filters:view.filters.map(rename),sort:view.sort?rename(view.sort):null});
-          return;
-        }
-        dialog.close();
-        state.schema=null;
-        render();
-      },button(t('Назад'),()=>openDialog(title,editor))));
-    },button(t('Назад'),()=>openDialog(title,menu)));
-    openDialog(title,editor);
+  const typeField=schemaTypeField(settings,type);
+  typeField.control.classList.add('column-form-fields');
+  const family=typeField.control.querySelector('[name=family]');
+  const supported=Boolean(canModify && family.value);
+  const originalType=typeField.value();
+  const newName=field('newName','text',name,{required:true,maxlength:postgres?63:64});
+  const allowNull=field('nullable','checkbox','1',{checked:nullable==='YES'});
+  const charset=field('charset','text',postgres?'':column[6] ?? '',{maxlength:64});
+  const collation=field('collation','text',(postgres?column[4]:column[7]) ?? '',{maxlength:128});
+  const comment=field('comment','text',(postgres?column[8]:column[5]) ?? '',{maxlength:1024});
+  const auto=field('autoIncrement','checkbox','1',{checked:!postgres && /\bauto_increment\b/i.test(column[4] ?? '')});
+  const original={charset:charset.value,collation:collation.value,comment:comment.value,auto:auto.checked};
+  const defaultMode=select('defaultMode',[['keep',t('Без изменений')],['value',t('Задать значение')],['remove',t('Удалить значение по умолчанию')]],'keep');
+  const defaultValue=field('defaultValue','text','');
+  const defaultLabel=label(t('Значение'),defaultValue);
+  const booleanDefault=select('booleanDefault',[['true','TRUE'],['false','FALSE']],'true');
+  const booleanLabel=label(t('Значение'),booleanDefault);
+  const after=select('position',[['keep',t('Без изменений')],['first',t('В начало')],
+    ...definition.columns.filter(([other])=>other!==name).map(([other],idx)=>['after'+idx,t('После')+' '+other])],'keep');
+  const charsetLabel=label(t('Кодировка'),charset), collationLabel=label(t('Сравнение'),collation);
+  const autoLabel=e('label',{class:'check'},auto,'AUTO_INCREMENT');
+  function update() {
+    const selected=family.value;
+    const character=/CHAR|TEXT/.test(selected);
+    charsetLabel.hidden=!character || postgres || !supported;
+    collationLabel.hidden=!character || !supported;
+    autoLabel.hidden=postgres || !supported || !/^(TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT)$/.test(selected);
+    booleanLabel.hidden=defaultMode.value!=='value' || selected!=='BOOLEAN';
+    booleanDefault.disabled=booleanLabel.hidden;
+    defaultLabel.hidden=defaultMode.value!=='value' || !booleanLabel.hidden;
+    defaultValue.disabled=defaultLabel.hidden;
+    defaultValue.type=/^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|DECIMAL|NUMERIC|FLOAT|DOUBLE|DOUBLE PRECISION|YEAR|BIT)$/.test(selected)
+      ?'number':selected==='DATE'?'date':selected==='TIME'?'time':/^(DATETIME|TIMESTAMP)$/.test(selected)?'datetime-local':'text';
+    defaultValue.step=defaultValue.type==='number'?'any':defaultValue.type==='time' || defaultValue.type==='datetime-local'?'1':'';
+    defaultValue.required=!defaultLabel.hidden && defaultValue.type!=='text';
   }
-  const postgres=state.connection.engine==='postgres';
-  function modify() {
-    const typeField=schemaTypeField(settings,type);
-    const charset=field('charset','text',column[6] ?? '',{maxlength:64});
-    const collation=field('collation','text',(postgres?column[4]:column[7]) ?? '',{maxlength:128});
-    const auto=field('autoIncrement','checkbox','1',{checked:/\bauto_increment\b/i.test(column[4] ?? '')});
-    const comment=field('comment','text',column[5] ?? '',{maxlength:1024});
-    const textOptions=div('fields',postgres?null:label(t('Кодировка'),charset),label(t('Сравнение'),collation));
-    const autoLabel=e('label',{class:'check'},auto,'AUTO_INCREMENT');
-    const family=typeField.control.querySelector('[name=family]');
-    const refresh=()=>{
-      const type=family.value;
-      const character=/CHAR|TEXT/.test(type);
-      textOptions.hidden=!character;
-      autoLabel.hidden=!/^(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT)$/.test(type);
+  family.addEventListener('change',update);
+  defaultMode.addEventListener('change',update);
+  update();
+  async function review(sql,apply,renames=false) {
+    openDialog(t('Предпросмотр изменений'),form([
+      e('strong',{},[state.connection.name,schema,table,name].join(' / ')),
+      e('p',{},t('Вы точно хотите внести эти изменения?')),
+      e('pre',{class:'schema-sql'},sql),
+    ],t('Подтвердить'),async()=>{
+      await apply();
+      dialog.close();
+      state.schema=null;
+      if (renames) {
+        const old=currentTableView();
+        const rename=rule=>rule.column===name?{...rule,column:newName.value}:rule;
+        applyTableView({filters:old.filters.map(rename),sort:old.sort?rename(old.sort):null});
+      } else render();
+    },button(t('Назад'),()=>openDialog(title,editor))));
+  }
+  const editor=form([
+    div('column-form-fields',
+      label(t('Название'),newName),
+      supported?typeField.control:e('p',{},t('Тип')+' · '+type),
+      label(t('По умолчанию')+' · '+(column[3] ?? '—'),defaultMode),defaultLabel,booleanLabel,
+      charsetLabel,collationLabel,
+      postgres || supported?e('label',{class:'check'},allowNull,t('Допускает NULL')):null,
+      autoLabel,
+      postgres || supported?label(t('Комментарий'),comment):null,
+      !postgres && supported?label(t('Переместить поле'),after):null),
+    e('details',{class:'column-native'},e('summary',{},t('Расширенное редактирование SQL')),
+      button(t('Открыть SQL'),()=>{
+        const quote=value=>{const mark=postgres?'"':'`';return mark+value.replaceAll(mark,mark+mark)+mark;};
+        const prefix='ALTER TABLE '+quote(schema)+'.'+quote(table)+(postgres?' ALTER COLUMN ':' MODIFY COLUMN ')+quote(name)+' ';
+        const native=form(label(t('Одна SQL-команда'),e('textarea',{name:'sql',class:'sql-console-input',required:true,maxlength:65000,value:prefix})),
+          t('Предпросмотр изменений'),async ({sql})=>{
+            if(sql.trim()===prefix.trim()) throw new Error(t('Введите SQL-запрос'));
+            await review(sql,()=>api(route('sql'),'POST',{sql}));
+          },button(t('Назад'),()=>openDialog(title,editor)));
+        openDialog(t('Расширенное редактирование SQL'),native);
+      })),
+  ],t('Предпросмотр изменений'),async values=>{
+    const rename=values.newName!==name;
+    const nullChanged=allowNull.checked!==(nullable==='YES');
+    const typeChanged=supported && (typeField.value()!==originalType || !collationLabel.hidden && collation.value!==original.collation ||
+      !charsetLabel.hidden && charset.value!==original.charset);
+    const commentChanged=comment.value!==original.comment;
+    const defaultChanged=defaultMode.value!=='keep';
+    const settingsChanged=typeChanged || nullChanged || commentChanged || auto.checked!==original.auto || after.value!=='keep';
+    if (!rename && !defaultChanged && !settingsChanged) throw new Error(t('Нет изменений'));
+    const changes={name,...(rename?{newName:values.newName}:{}),
+      ...(defaultChanged?{defaultValue:values.defaultMode==='remove'?null:(values.booleanDefault ?? (defaultValue.type==='datetime-local'?values.defaultValue.replace('T',' '):values.defaultValue))}:{}),
     };
-    family.addEventListener('change',refresh);
-    refresh();
-    operation([
-      e('strong',{},name+' · '+type),typeField.control,
-      e('label',{class:'check'},field('nullable','checkbox','1',{checked:nullable==='YES'}),t('Допускает NULL')),
-      textOptions,postgres?null:autoLabel,postgres?null:label(t('Комментарий'),comment),
-      e('small',{},t('Смена типа преобразует существующие значения.')),
-    ],values=>({operation:'modify-column',column:{name,type:typeField.value(),nullable:Boolean(values.nullable),
-      ...(!textOptions.hidden?{collation:collation.value,...(!postgres?{charset:charset.value}:{})}:{}),
-      ...(!postgres?{autoIncrement:!autoLabel.hidden && auto.checked,comment:comment.value}:{})}}));
-  }
-  let menu;
-  function nativeEdit() {
-    const quote=value=>{
-      const delimiter=postgres?'"':'`';
-      return delimiter+value.replaceAll(delimiter,delimiter+delimiter)+delimiter;
-    };
-    const prefix='ALTER TABLE '+quote(schema)+'.'+quote(table)+(postgres?' ALTER COLUMN ':' MODIFY COLUMN ')+quote(name)+' ';
-    const editor=form([
-      e('p',{},t('Введите полное определение или команду ALTER TABLE для свойства столбца.')),
-      e('code',{},name+' · '+type+' · '+(nullable==='YES'?'NULL':'NOT NULL')),
-      label(t('Одна SQL-команда'),e('textarea',{name:'sql',class:'code sql-console-input',required:true,maxlength:65000,
-        spellcheck:'false',value:prefix})),
-    ],t('Предпросмотр изменений'),async ({sql})=>{
-      if (sql.trim()===prefix.trim()) throw new Error(t('Введите SQL-запрос'));
-      openDialog(t('Предпросмотр изменений'),form([
-        e('strong',{},[state.connection.name,schema,table,name].join(' / ')),
-        e('p',{},t('Вы точно хотите внести эти изменения?')),
-        e('pre',{class:'schema-sql'},sql),
-      ],t('Подтвердить'),async ()=>{
-        await api(route('sql'),'POST',{sql});
-        dialog.close();
-        state.schema=null;
-        render();
-      },button(t('Назад'),()=>openDialog(t('Расширенное редактирование SQL'),editor))));
-    },button(t('Назад'),()=>openDialog(title,menu)));
-    openDialog(t('Расширенное редактирование SQL'),editor);
-  }
-  const details=postgres?[
-    ['По умолчанию',column[3]],['Сравнение',column[4]],['Столбец идентификатора',column[5]],
-    ['Вычисляемый столбец',column[6]],['Выражение генерации',column[7]],['Комментарий',column[8]],
-  ]:[
-    ['По умолчанию',column[3]],['Дополнительно',column[4]],['Комментарий',column[5]],
-    ['Кодировка',column[6]],['Сравнение',column[7]],['Индекс',column[8]],['Выражение генерации',column[9]],
-  ];
-  menu=div('stack',
-    e('dl',{class:'column-editor-properties'},
-      [['Тип',type],['Допускает NULL',nullable==='YES'?t('Да'):t('Нет')],...details]
-        .map(([label,value])=>[e('dt',{},t(label)),e('dd',{},value==null || value===''?'—':String(value))])),
-    div('row',
-      canModify?button(t('Изменить тип и свойства'),modify,'primary'):null,
-      button(t('Переименовать столбец'),()=>operation(
-        label(t('Название'),field('name','text',name,{required:true,maxlength:64})),
-        values=>({operation:'rename-column',columnName:name,name:values.name}))),
-      button(t('Значение по умолчанию'),()=>operation([
-        e('p',{},t('Текущее значение')+' · '+(column[3] ?? '—')),
-        label(t('Значение'),field('defaultValue','text','',{maxlength:1024})),
-        e('label',{class:'check'},field('remove','checkbox','1'),t('Удалить значение по умолчанию')),
-      ],values=>({operation:'set-column-default',columnName:name,defaultValue:values.remove?null:values.defaultValue}))),
-      postgres?button(t('Комментарий'),()=>operation([
-        label(t('Комментарий'),field('comment','text',column[8] ?? '',{maxlength:1024})),
-      ],values=>({operation:'set-column-comment',columnName:name,comment:values.comment || null}))):null,
-      postgres?button('NULL / NOT NULL',()=>operation([
-        e('label',{class:'check'},field('nullable','checkbox','1',{checked:nullable==='YES'}),t('Допускает NULL')),
-      ],values=>({operation:'set-column-nullability',columnName:name,nullable:Boolean(values.nullable)}))):null,
-      button(t('Расширенное редактирование SQL'),nativeEdit)));
-  openDialog(title,menu);
+    let input;
+    if (postgres) {
+      if (nullChanged || typeChanged) changes.nullable=allowNull.checked;
+      if (typeChanged) Object.assign(changes,{type:typeField.value(),collation:collationLabel.hidden?'':collation.value});
+      if (commentChanged) changes.comment=comment.value || null;
+      input={operation:'edit-column',column:changes};
+    } else if (supported && (settingsChanged || rename && defaultChanged)) {
+      Object.assign(changes,{type:typeField.value(),nullable:allowNull.checked,comment:comment.value,autoIncrement:!autoLabel.hidden && auto.checked});
+      if (!charsetLabel.hidden) Object.assign(changes,{charset:charset.value,collation:collation.value});
+      if (after.value==='first') changes.after=null;
+      else if(after.value!=='keep') changes.after=definition.columns.filter(([other])=>other!==name)[Number(after.value.slice(5))][0];
+      input={operation:'modify-column',column:changes};
+    } else if (rename && defaultChanged) {
+      throw new Error(t('Примените переименование и значение по умолчанию по отдельности для этого типа.'));
+    } else if (rename) input={operation:'rename-column',columnName:name,name:values.newName};
+    else input={operation:'set-column-default',columnName:name,defaultValue:changes.defaultValue};
+    input={...input,schema,table};
+    const preview=await api(path,'POST',{...input,preview:true});
+    await review(preview.sql,()=>api(path,'POST',{...input,confirmation:preview.confirmation}),rename);
+  });
+  openDialog(title,editor);
 }
 
 function filterControls(columns) {
@@ -1560,134 +1645,68 @@ function sqlView(target) {
     })),output);
 }
 function graph(target) {
-  const canvas = e('canvas',{tabindex:0,'aria-label':t('Трёхмерная схема. Стрелки вращают, плюс и минус меняют масштаб.')});
-  const context = canvas.getContext('2d');
-  const graphTables = state.tables.slice(0,120);
-  const names = new Map(graphTables.map((row,index)=>[JSON.stringify(row.slice(0,2)),index]));
-  const edges = state.relations.flatMap(row=>{
-    const start = names.get(JSON.stringify(row.slice(0,2)));
-    const end = names.get(JSON.stringify(row.slice(2,4)));
-    return start == null || end == null ? [] : [[start,end]];
-  });
-  const size = Math.ceil(Math.sqrt(graphTables.length));
-  const positions = graphTables.map(([schema,table],index)=>({
-    schema,table,index,x:(index%size-(size-1)/2)*167,
-    z:(Math.floor(index/size)-(Math.ceil(graphTables.length/size)-1)/2)*112,
-  }));
-  let yaw = -.2, pitch = .8, zoom = 1;
-  let hits = [];
+  const key=([schema,table])=>JSON.stringify([schema,table]);
+  const tables=new Map(state.tables.map(table=>[key(table),table]));
+  const connected=new Map();
+  for (const relation of state.relations) {
+    const source=key(relation.slice(0,2)),destination=key(relation.slice(2));
+    if (!tables.has(source) || !tables.has(destination)) continue;
+    if (!connected.has(source)) connected.set(source,{in:new Set(),out:new Set()});
+    if (!connected.has(destination)) connected.set(destination,{in:new Set(),out:new Set()});
+    connected.get(source).out.add(destination);
+    connected.get(destination).in.add(source);
+  }
+  const search=field('graphSearch','search','',{placeholder:t('Поиск таблиц'),'aria-label':t('Поиск таблиц')});
+  const picker=select('graphTable',[],undefined,{'aria-label':t('Таблица')});
+  const scene=div('relationship-stage');
+  const depth=field('graphDepth','checkbox','1');
+  depth.addEventListener('change',()=>scene.classList.toggle('has-depth',depth.checked));
+  let selected=state.table && tables.has(key(state.table))?key(state.table):connected.keys().next().value ?? tables.keys().next().value;
+  function card(id,center=false) {
+    const table=tables.get(id);
+    return div(center?'relationship-card current':'relationship-card',
+      e('small',{},table[0]),
+      center?e('strong',{},table[1]):button(table[1],()=>{selected=id;search.value='';refreshPicker();focus();},'relationship-name'),
+      button(t('Открыть данные'),()=>openWorkspaceTable(table),'relationship-open'));
+  }
+  function lane(title,ids,end) {
+    const nodes=[...ids].sort((a,b)=>tables.get(a)[1].localeCompare(tables.get(b)[1]));
+    return div('relationship-lane stack',e('h3',{},t(title)+' · '+nodes.length),
+      nodes.length?div('relationship-nodes',nodes.map(id=>div('relationship-edge '+end,card(id),
+        e('span',{'aria-hidden':'true'},'→')))):e('small',{},t('Связей нет')));
+  }
   function draw() {
-    const {width,height} = canvas.getBoundingClientRect();
-    if (!width || !height) return;
-    const density = window.devicePixelRatio || 1;
-    canvas.width = Math.round(width*density);
-    canvas.height = Math.round(height*density);
-    context.scale(density,density);
-    const fit = Math.min(1.15,(width-35)/(size*173),(height-35)/(size*96)) * zoom;
-    function project(node) {
-      const x = node.x*Math.cos(yaw) - node.z*Math.sin(yaw);
-      const z = node.x*Math.sin(yaw) + node.z*Math.cos(yaw);
-      const depth = z*Math.cos(pitch);
-      const scale = 1200/(1200+depth*fit);
-      return { ...node, x:width/2+x*fit*scale, y:height/2+z*Math.sin(pitch)*fit*scale, depth, scale:Math.max(.28,fit*scale) };
-    }
-    const points = positions.map(project);
-    context.strokeStyle='#227c8eb8';
-    context.lineWidth=1.8;
-    for (const [start,end] of edges) {
-      const a=points[start], b=points[end];
-      context.beginPath();
-      if (start===end) context.arc(a.x+40*a.scale,a.y-17*a.scale,23*a.scale,0,Math.PI*2);
-      else {
-        context.moveTo(a.x,a.y);
-        context.bezierCurveTo(a.x,(a.y+b.y)/2,b.x,(a.y+b.y)/2,b.x,b.y);
-      }
-      context.stroke();
-    }
-    hits = points.sort((a,b)=>b.depth-a.depth).map(point=>{
-      const {x,y,scale}=point;
-      const w=145*scale, h=43*scale;
-      context.beginPath();
-      context.roundRect(x-w/2,y-h/2+7*scale,w,h,10*scale);
-      context.fillStyle='#77aeb4';
-      context.fill();
-      const gradient=context.createLinearGradient(x-w/2,y-h/2,x+w/2,y+h/2);
-      gradient.addColorStop(0,'#f3fffc');
-      gradient.addColorStop(1,'#a0dfcf');
-      context.fillStyle=gradient;
-      context.beginPath();
-      context.roundRect(x-w/2,y-h/2,w,h,10*scale);
-      context.fill();
-      context.strokeStyle='#fff9';
-      context.lineWidth=1;
-      context.stroke();
-      context.fillStyle='#124354';
-      context.textAlign='center';
-      context.textBaseline='middle';
-      context.font=`600 ${Math.max(8,14*scale)}px system-ui`;
-      const name=point.table.length>21?point.table.slice(0,20)+'…':point.table;
-      context.fillText(name,x,y,w-8);
-      return {point,left:x-w/2,right:x+w/2,top:y-h/2,bottom:y+h/2+7*scale};
-    });
+    if (!tables.has(selected)) {scene.replaceChildren(e('p',{},t('Подходящих таблиц нет.')));return;}
+    const links=connected.get(selected);
+    const incoming=new Set(links?.in),outgoing=new Set(links?.out);
+    const self=incoming.delete(selected);
+    outgoing.delete(selected);
+    scene.replaceChildren(lane('На неё ссылаются',incoming,'incoming'),
+      div('relationship-focus stack',e('h3',{},t('Выбранная таблица')),card(selected,true),
+        self?e('small',{},t('Ссылается на себя')):null),
+      lane('Она ссылается на',outgoing,'outgoing'));
   }
-  function viewTable(index) {
-    state.table=graphTables[index];
-    state.offset=0;
-    setView('tables');
+  function refreshPicker() {
+    const needle=search.value.trim().toLowerCase();
+    const choices=[...tables].filter(([,table])=>table.slice(0,2).join('.').toLowerCase().includes(needle));
+    picker.replaceChildren(...choices.map(([id,[schema,table]])=>e('option',{value:id},schema+'.'+table)));
+    if (!choices.some(([id])=>id===selected)) selected=choices[0]?.[0];
+    picker.value=selected ?? '';
+    picker.disabled=!choices.length;
   }
-  function move(x,y,scale=1) {
-    yaw+=x;
-    pitch=Math.max(.32,Math.min(1.5,pitch+y));
-    zoom=Math.max(.45,Math.min(2.5,zoom*scale));
+  search.addEventListener('input',()=>{refreshPicker();draw();});
+  function focus() {
+    state.table=tables.get(selected);
+    writeRoute(true);
     draw();
   }
-  canvas.addEventListener('keydown',event=>{
-    const key = {ArrowLeft:[-.16,0],ArrowRight:[.16,0],ArrowUp:[0,.12],ArrowDown:[0,-.12],'+':[0,0,1.2],'-':[0,0,1/1.2]}[event.key];
-    if (!key) return;
-    event.preventDefault();
-    move(...key);
-  });
-  let drag;
-  canvas.addEventListener('pointerdown',event=>{
-    if (!event.isPrimary) return;
-    canvas.setPointerCapture(event.pointerId);
-    drag={x:event.clientX,y:event.clientY,moved:false};
-  });
-  canvas.addEventListener('pointermove',event=>{
-    if (!drag || !event.isPrimary) return;
-    const dx=event.clientX-drag.x, dy=event.clientY-drag.y;
-    if (!drag.moved && Math.hypot(dx,dy)<4) return;
-    drag={x:event.clientX,y:event.clientY,moved:true};
-    move(dx/180,dy/220);
-  });
-  canvas.addEventListener('pointerup',event=>{
-    if (!event.isPrimary) return;
-    if (drag && !drag.moved) {
-      const rect=canvas.getBoundingClientRect();
-      const x=event.clientX-rect.left,y=event.clientY-rect.top;
-      const hit=hits.findLast(rect=>x>=rect.left && x<=rect.right && y>=rect.top && y<=rect.bottom);
-      if (hit) viewTable(hit.point.index);
-    }
-    drag=null;
-  });
-  canvas.addEventListener('pointercancel',()=>{drag=null;});
-  const picker=select('node',graphTables.map(([schema,table],index)=>[String(index),schema+'.'+table]),'0');
-  target.append(div('panel graph stack',
-    div('row spread',e('h2',{},t('Связи таблиц')),div('row',
-      button('−',()=>move(0,0,1/1.2),null,{'aria-label':t('Уменьшить масштаб')}),
-      button('+',()=>move(0,0,1.2),null,{'aria-label':t('Увеличить масштаб')}),
-      button(t('Сбросить вид'),()=>{yaw=-.2;pitch=.8;zoom=1;draw();}))),
-    canvas,
-    e('small',{},t('Объекты — {objects} · Связи — {edges}. Перетащите схему, чтобы повернуть, или нажмите на таблицу, чтобы открыть её.',{objects:graphTables.length,edges:edges.length})),
-    state.tables.length>120?e('small',{},t('На схеме показаны первые 120 объектов.')):null,
-    div('row',div('grow',label(t('Таблица'),picker)),button(t('Открыть'),()=>viewTable(Number(picker.value)))),
-  ));
-  const observer = new ResizeObserver(()=>{
-    if (!canvas.isConnected) {observer.disconnect();return;}
-    draw();
-  });
-  observer.observe(canvas);
-  draw();
+  picker.addEventListener('change',()=>{selected=picker.value;focus();});
+  target.append(div('catalog-panel relationship-panel',
+    div('row spread',e('h2',{},t('Связи таблиц')),
+      div('row',search,picker,e('label',{class:'check'},depth,t('Наклон 3D')))),
+    e('small',{},t('Стрелка идёт от внешнего ключа к таблице, на которую он ссылается. Нажмите на имя, чтобы открыть её связи.')),
+    scene));
+  refreshPicker();draw();
 }
 
 login();
