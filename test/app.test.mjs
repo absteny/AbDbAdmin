@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { get } from 'node:http';
+import { createHash } from 'node:crypto';
+import { connect } from 'node:net';
+import ssh2 from 'ssh2';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -176,7 +179,77 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
       const overview=await request(conn+'/server-status','GET',undefined,admin);
       assert.ok(overview.body.status.some(([name])=>name.toLowerCase()==='uptime'));
       const metrics=(await request(conn+'/server-status?metrics=1','GET',undefined,admin)).body;
-      assert.deepEqual(Object.keys(metrics),['status']);
+      assert.deepEqual(Object.keys(metrics),['status','sessions','sessionsTruncated']);
+      const running=withDatabase(profile,db=>db.query('SELECT SLEEP(2) AS active_session_check'));
+      try {
+        let live;
+        for (let tries=0;tries<8 && !live;tries++) {
+          const sample=(await request(conn+'/server-status?metrics=1','GET',undefined,admin)).body;
+          live=sample.sessions.find(row=>row[7]?.includes('active_session_check'));
+          if (!live) await new Promise(resolve=>setTimeout(resolve,50));
+        }
+        assert.ok(live,'Running query appears in process list');
+        assert.equal(live[1],profile.user);
+      } finally {await running;}
+      const {Server,utils}=ssh2;
+      const hostKey=utils.generateKeyPairSync('ed25519').private;
+      const passphrase='test-passphrase';
+      const keypair=utils.generateKeyPairSync('ed25519',{passphrase,cipher:'aes256-ctr'});
+      const fingerprint='SHA256:'+createHash('sha256').update(utils.parseKey(hostKey).getPublicSSH()).digest('base64').replace(/=$/,'');
+      const expected=utils.parseKey(keypair.public).getPublicSSH();
+      const clients=new Set();
+      const proxy=new Server({hostKeys:[hostKey]},client=>{
+        clients.add(client);
+        client.on('error',()=>{});
+        client.on('close',()=>clients.delete(client));
+        client.on('authentication',context=>{
+          if (context.username==='tunnel-test' && context.method==='publickey' && context.key.data.equals(expected) &&
+              (!context.signature || utils.parseKey(keypair.public).verify(context.blob,context.signature,context.hashAlgo)===true)) {
+            context.accept();
+          } else context.reject(['publickey']);
+        });
+        client.on('tcpip',(accept,reject,info)=>{
+          if (info.destIP!==profile.host || info.destPort!==profile.port) {reject();return;}
+          const stream=connect(profile.port,profile.host);
+          stream.once('error',()=>{stream.destroy();});
+          const channel=accept();
+          channel.once('error',()=>stream.destroy());
+          channel.once('close',()=>stream.destroy());
+          stream.once('close',()=>channel.destroy());
+          channel.pipe(stream).pipe(channel);
+        });
+      });
+      proxy.listen(0,'127.0.0.1');
+      await once(proxy,'listening');
+      try {
+        const ssh={host:'127.0.0.1',port:proxy.address().port,user:'tunnel-test',fingerprint,privateKey:keypair.private,passphrase};
+        const tunneled={...profile,name:'SSH test',ssh};
+        const wrongFingerprint='SHA256:'+Buffer.alloc(32).toString('base64').replace(/=$/,'');
+        const wrong=await request('connection-test','POST',{...tunneled,ssh:{...ssh,fingerprint:wrongFingerprint}},admin,502);
+        assert.match(wrong.body.error,/host key/i);
+        await request('connection-test','POST',{...tunneled,ssh:{...ssh,fingerprint:''}},admin,400);
+        const invalid=await request('connection-test','POST',{...tunneled,ssh:{...ssh,passphrase:'wrong'}},admin,502);
+        assert.match(invalid.body.error,/passphrase/i);
+        await request('connection-test','POST',tunneled,admin);
+        const savedId=(await request('connections','POST',tunneled,admin)).body.id;
+        const savedPath='connections/'+savedId;
+        const settings=(await request(savedPath+'/settings','GET',undefined,admin)).body;
+        assert.equal(settings.ssh.fingerprint,fingerprint);
+        assert.equal(settings.ssh.hasKey,true);
+        assert.equal(settings.ssh.hasPassphrase,true);
+        assert.ok(!Object.hasOwn(settings.ssh,'privateKey'));
+        assert.ok(!Object.hasOwn(settings.ssh,'passphrase'));
+        await request(savedPath+'/settings','PUT',settings,admin);
+        const viaSsh=(await request(savedPath+'/sql','POST',{sql:'SELECT 314 AS answer'},admin)).body;
+        assert.equal(Number(viaSsh.rows[0][0]),314);
+        const wal=await readFile(join(directory,'claydb.sqlite-wal'));
+        assert.ok(!wal.includes(passphrase));
+        assert.ok(!wal.includes('BEGIN OPENSSH PRIVATE KEY'));
+        await request(savedPath,'DELETE',undefined,admin);
+      } finally {
+        for (const client of clients) client.end();
+        await new Promise(resolve=>proxy.close(resolve));
+      }
       assert.ok(overview.body.grants.length);
       const objectPath=conn+'/object-change';
       const event={kind:'EVENT',name:'clay_route_event'};

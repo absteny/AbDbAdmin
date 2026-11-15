@@ -220,6 +220,23 @@ function loginLimit(req) {
   ip.count++;
   rates.set(index, ip);
 }
+function sshConfiguration(input,previous) {
+  if (input===null || input===undefined) return input===null?null:previous ?? null;
+  requireValue(typeof input==='object' && !Array.isArray(input),'Проверьте настройки SSH');
+  const {host,port,user,fingerprint}=input;
+  const privateKey=input.privateKey ?? previous?.privateKey;
+  const passphrase=input.passphrase ?? (input.privateKey===undefined?previous?.passphrase:undefined) ?? '';
+  const fingerprintBytes=typeof fingerprint==='string' && /^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)
+    ?Buffer.from(fingerprint.slice(7),'base64'):null;
+  requireValue(typeof host==='string' && host.length<=255 && host.length>0 &&
+    (/^[a-z0-9_.-]+$/i.test(host) || isIP(host)===6) && Number.isInteger(port) && port>0 && port<=65535 &&
+    typeof user==='string' && /^[a-z0-9_.@-]{1,128}$/i.test(user) &&
+    fingerprintBytes && fingerprintBytes.toString('base64').replace(/=$/,'')===fingerprint.slice(7) &&
+    typeof privateKey==='string' && privateKey.trim().length>0 && privateKey.length<=32768 &&
+    typeof passphrase==='string' && passphrase.length<=4096,'Проверьте настройки SSH');
+  return {host,port,user,fingerprint,privateKey:privateKey.trim(),passphrase};
+}
+
 function configuration(input, previous) {
   const {name, engine, host, port, user, database, tls, ca = ''} = input;
   const password = typeof input.password === 'string' ? input.password : previous?.password;
@@ -227,7 +244,9 @@ function configuration(input, previous) {
   requireValue([name,host,user,database].every(value => typeof value === 'string' && value.trim() && value.length <= 255));
   requireValue(!/[\s/\\\x00]/.test(host) && Number.isInteger(port) && port > 0 && port <= 65535);
   requireValue(typeof password === 'string' && password.length <= 4096 && typeof ca === 'string' && ca.length <= 32768);
-  return {name:name.trim(), engine, host, port, user, database, password, tls, ca, production:input.production===undefined ? Boolean(previous?.production) : input.production===true};
+  requireValue(engine!=='postgres' || !input.ssh,'SSH доступен для MySQL и MariaDB');
+  const ssh=engine==='postgres'?null:sshConfiguration(input.ssh,previous?.ssh);
+  return {name:name.trim(), engine, host, port, user, database, password, tls, ca,...(ssh?{ssh}:{}), production:input.production===undefined ? Boolean(previous?.production) : input.production===true};
 }
 function access(user, id) {
   const record = user.admin
@@ -236,7 +255,12 @@ function access(user, id) {
   requireValue(record, 'Подключение недоступно', 404);
   return record;
 }
-const publicProfile = ({password, ca, ...rest}) => ({...rest, customCa:Boolean(ca)});
+function publicProfile({password,ca,ssh,...rest}) {
+  return {...rest,customCa:Boolean(ca),ssh:ssh?{
+    host:ssh.host,port:ssh.port,user:ssh.user,fingerprint:ssh.fingerprint,
+    hasKey:Boolean(ssh.privateKey),hasPassphrase:Boolean(ssh.passphrase),
+  }:null};
+}
 const limitText = value => {
   if (Buffer.isBuffer(value)) return '[binary: ' + value.length + ' bytes]';
   if (typeof value === 'string' && value.length > 4096) return value.slice(0,4096) + '…';
@@ -261,6 +285,12 @@ async function remote(profile, fn, diagnosing=false, options) {
   catch (error) {
     if (error instanceof RequestError) throw error;
     const messages = {
+      SSH_KEY_INVALID:'Не удалось прочитать SSH-ключ. Проверьте формат ключа и парольную фразу.',
+      SSH_HOST_KEY_MISMATCH:'Отпечаток SSH-сервера отличается от указанного.',
+      SSH_AUTH_FAILED:'SSH-сервер отклонил ключ. Проверьте пользователя и разрешённые ключи.',
+      SSH_TIMEOUT:'SSH-сервер или туннель не ответил вовремя.',
+      SSH_CONNECTION_FAILED:'Не удалось подключиться к SSH-серверу. Проверьте адрес и порт.',
+      SSH_FORWARD_FAILED:'SSH-сервер не открыл путь к БД. Проверьте адрес БД и настройки перенаправления.',
       ECONNREFUSED:'Подключение отклонено. Проверьте хост и порт БД',
       ENOTFOUND:'Хост БД не найден',
       ETIMEDOUT:'Сервер БД не ответил вовремя',

@@ -115,10 +115,15 @@ export async function exportTableSql(db,database,table) {
 export async function serverOverview(db,{metricsOnly=false}={}) {
   const keep=row=>row.map(value=>value==null?null:String(value));
   const status=await db.query("SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime','Threads_connected','Threads_running','Questions','Slow_queries','Bytes_received','Bytes_sent')");
-  if (metricsOnly) return {status:status.rows.map(keep)};
+  const processList=await db.query(`SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, LEFT(INFO,2048), CHAR_LENGTH(INFO)>2048
+    FROM information_schema.PROCESSLIST WHERE ID<>CONNECTION_ID()
+    ORDER BY (COMMAND='Sleep'),TIME DESC,ID LIMIT 101`);
+  const result={status:status.rows.map(keep),sessions:processList.rows.slice(0,100).map(keep),
+    sessionsTruncated:processList.rows.length>100};
+  if (metricsOnly) return result;
   const variables=await db.query("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('version','version_comment','max_connections','read_only','character_set_server','collation_server','event_scheduler')");
   const grants=await db.query('SHOW GRANTS FOR CURRENT_USER');
-  return {status:status.rows.map(keep),variables:variables.rows.map(keep),grants:grants.rows.map(keep)};
+  return {...result,variables:variables.rows.map(keep),grants:grants.rows.map(keep)};
 }
 
 export async function objectDefinition(db,database,kind,name) {

@@ -29,7 +29,8 @@ registries.
 ## Self-hosting and personal data
 
 The instance stores account names, password hashes, session and permission
-metadata, encrypted connection profiles, and an audit log on the operator's
+metadata, encrypted connection profiles (including SSH credentials when configured),
+and an audit log on the operator's
 server. Audit records include available actor names, target identifiers,
 timestamps, actions, and outcomes. SQL details can include query text,
 bound values, and previous values used to undo eligible edits. These details

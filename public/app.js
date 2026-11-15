@@ -334,6 +334,66 @@ function editConnection(config={}, id=null) {
   const engine = select('engine',[['postgres','PostgreSQL'],['mysql','MySQL'],['mariadb','MariaDB']],config.engine || 'postgres');
   const port = field('port','number',config.port || 5432,{min:1,max:65535,required:true});
   engine.addEventListener('change',()=>{port.value=engine.value==='postgres'?5432:3306;});
+  const targetHost=field('host','text',config.host,{required:true,placeholder:'db.example.net'});
+  const savedSsh=config.ssh;
+  const sshToggle=field(undefined,'checkbox','1',{checked:Boolean(savedSsh)});
+  const sshToggleLabel=e('label',{class:'check wide'},sshToggle,t('Подключаться через SSH'));
+  const sshHost=field(undefined,'text',savedSsh?.host ?? '',{required:true,maxlength:255,placeholder:'ssh.example.net'});
+  const sshPort=field(undefined,'number',savedSsh?.port ?? 22,{required:true,min:1,max:65535});
+  const sshUser=field(undefined,'text',savedSsh?.user ?? '',{required:true,maxlength:128});
+  const fingerprint=field(undefined,'text',savedSsh?.fingerprint ?? '',{required:true,maxlength:50,placeholder:'SHA256:…'});
+  const keyFile=field(undefined,'file');
+  const keyText=e('textarea',{maxlength:32768,autocomplete:'off',spellcheck:'false',
+    placeholder:savedSsh?.hasKey?t('Сохранённый SSH-ключ'):null});
+  const passphrase=field(undefined,'password','',{maxlength:4096,autocomplete:'new-password',
+    placeholder:savedSsh?.hasPassphrase?t('Сохранённая парольная фраза'):null});
+  const clearPassphrase=field(undefined,'checkbox','1');
+  const keyStatus=e('small',{role:'status'});
+  let keyLoad=Promise.resolve();
+  let fileReadId=0;
+  keyFile.addEventListener('change',()=>{
+    const file=keyFile.files[0], readId=++fileReadId;
+    if (!file) return;
+    keyStatus.textContent='';
+    keyFile.setCustomValidity('');
+    keyLoad=(async()=>{
+      try {
+        if (file.size>32768) throw new Error(t('Размер SSH-ключа не должен превышать 32 КБ.'));
+        const text=await file.text();
+        if (readId!==fileReadId) return;
+        keyText.value=text.trim();
+        keyStatus.textContent=t('Файл ключа прочитан');
+      } catch (error) {
+        if (readId!==fileReadId) return;
+        keyStatus.textContent=error.message;
+        keyFile.setCustomValidity(error.message);
+      }
+    })();
+  });
+  keyText.addEventListener('input',()=>{
+    fileReadId++;
+    keyFile.value='';
+    keyFile.setCustomValidity('');
+    keyStatus.textContent='';
+  });
+  const sshFields=e('fieldset',{class:'wide catalog-filter ssh-fields'},
+    e('legend',{},'SSH'),
+    div('fields',label(t('Хост SSH'),sshHost),label(t('Порт SSH'),sshPort),label(t('Пользователь SSH'),sshUser),
+      label(t('Отпечаток ключа SSH-сервера'),fingerprint),
+      e('small',{class:'wide'},t('Укажите SHA256-отпечаток, полученный у администратора SSH-сервера.')),
+      label(t('Загрузить файл приватного ключа'),keyFile,'wide'),keyStatus,
+      label(t('Или вставить приватный SSH-ключ'),keyText,'wide'),
+      label(t('Парольная фраза SSH-ключа'),passphrase,'wide'),
+      savedSsh?.hasPassphrase?e('label',{class:'check wide'},clearPassphrase,t('Удалить сохранённую парольную фразу')):null,
+      e('small',{class:'wide'},t('Хост и порт базы указываются так, как их видит SSH-сервер. Если MySQL работает на нём, обычно это 127.0.0.1:3306.'))));
+  function syncSsh() {
+    sshToggleLabel.hidden=engine.value==='postgres';
+    sshFields.disabled=sshFields.hidden=sshToggleLabel.hidden || !sshToggle.checked;
+    targetHost.placeholder=sshFields.disabled?'db.example.net':'127.0.0.1';
+  }
+  engine.addEventListener('change',syncSsh);
+  sshToggle.addEventListener('change',syncSsh);
+  syncSsh();
   const observed=e('strong',{},t('Пока неизвестен'));
   const status=e('small',{role:'status'});
   const network=div('network wide stack',
@@ -349,10 +409,11 @@ function editConnection(config={}, id=null) {
     label(t('СУБД'),engine),
     label(t('Порт'),port),
     e('label',{class:'check wide'},field('production','checkbox','1',{checked:config.production}),t('Рабочая база (production)'),e('small',{},t('Показывает предупреждение при работе с реальными данными. Права доступа задаются отдельно.'))),
-    label(t('Хост'),field('host','text',config.host,{required:true,placeholder:'db.example.net'})),
+    label(t('Хост'),targetHost),
     label(t('База данных'),field('database','text',config.database,{required:true})),
     label(t('Пользователь БД'),field('user','text',config.user,{required:true})),
     label(t('Пароль БД'),field('password','password','',{autocomplete:'new-password',placeholder:id?t('Сохранённый пароль'):''})),
+    sshToggleLabel,sshFields,
     e('label',{class:'check wide'},field('tls','checkbox','1',{checked:config.tls ?? true}),t('TLS с проверкой сертификата')),
     label(config.customCa?t('Новый PEM-сертификат CA (текущий сохранён)'):t('PEM-сертификат CA (необязательно)'),e('textarea',{name:'ca'}),'wide'),
     config.customCa?e('label',{class:'check wide'},field('removeCa','checkbox','1'),t('Удалить сохранённый сертификат CA')):null,
@@ -363,6 +424,16 @@ function editConnection(config={}, id=null) {
     data.port=Number(data.port);
     data.tls=Boolean(data.tls);
     data.production=Boolean(data.production);
+    data.ssh=null;
+    if (!sshFields.disabled) {
+      await keyLoad;
+      if (!keyFile.validity.valid) throw new Error(keyFile.validationMessage);
+      const privateKey=keyText.value.trim();
+      if (!privateKey && !savedSsh?.hasKey) throw new Error(t('Выберите файл или вставьте приватный SSH-ключ.'));
+      data.ssh={host:sshHost.value.trim(),port:Number(sshPort.value),user:sshUser.value.trim(),
+        fingerprint:fingerprint.value.trim(),...(privateKey?{privateKey}:{}),
+        ...(passphrase.value || clearPassphrase.checked?{passphrase:clearPassphrase.checked?'':passphrase.value}:{})};
+    }
     if (id && !data.password && !data.resetPassword) delete data.password;
     if (id && !data.ca && !data.removeCa) delete data.ca;
     let next = id;
@@ -595,11 +666,31 @@ async function serverStatusView(target,stamp) {
   } catch {}
   const status=e('small',{role:'status'},t('Загрузка…'));
   const charts=div('metrics-grid');
+  const sessions=div('stack');
+  const activeOnly=field(undefined,'checkbox','1');
+  const sessionOutput=div('stack');
+  let latestSessions=[];
+  let sessionsTruncated=false;
+  function showSessions() {
+    const visible=latestSessions.filter(row=>!activeOnly.checked || row[4]!=='Sleep');
+    sessionOutput.replaceChildren(
+      visible.length?div('table-wrap',e('table',{class:'structure-grid process-grid'},
+        e('thead',{},e('tr',{},['ID',t('Пользователь БД'),t('Хост'),t('База данных'),t('Команда'),t('Секунды'),t('Состояние'),t('Текущий SQL')]
+          .map(name=>e('th',{scope:'col'},name)))),
+        e('tbody',{},visible.map(row=>e('tr',{},row.slice(0,7).map(value=>e('td',{},value??'—')),
+          e('td',{},row[7]?e('code',{},row[7]+(Number(row[8])?'…':'')):'—')))))):e('p',{},t('Нет видимых соединений')),
+      sessionsTruncated?e('small',{},t('Показаны первые 100 соединений')):null);
+  }
+  activeOnly.addEventListener('change',showSessions);
+  sessions.append(div('row spread',e('h3',{},t('Соединения и запросы')),
+    e('label',{class:'check'},activeOnly,t('Только активные'))),
+    e('small',{},t('Видимость соединений зависит от прав учётной записи MySQL.')),
+    sessionOutput);
   const settings=div('stack');
   target.replaceChildren(div('catalog-panel',
     div('row spread',e('h2',{},t('Состояние сервера')),status),
     e('p',{},t('Обновление каждые 3 секунды · история за 10 минут в этом браузере')),
-    charts,settings));
+    charts,sessions,settings));
   const controller=new AbortController();
   let timer;
   let details=null;
@@ -670,6 +761,9 @@ async function serverStatusView(target,stamp) {
           e('details',{},e('summary',{},t('Права подключённой учётной записи')),
           resultTable({columns:['GRANT'],rows:data.grants})));
       }
+      latestSessions=data.sessions ?? [];
+      sessionsTruncated=data.sessionsTruncated;
+      showSessions();
       const at=Date.now(), m=parse(data.status);
       const counters=['questions','slow_queries','bytes_received','bytes_sent'].map(name=>Number(m[name]));
       const uptime=Number(m.uptime);

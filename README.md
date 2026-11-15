@@ -104,6 +104,31 @@ on the same Docker network and use the database service name. For a database
 on a separate machine, enter its reachable address and allow connections
 from the Docker host on the database side.
 
+### Connect to MySQL or MariaDB through SSH
+
+1. Select **MySQL** or **MariaDB**, then enable **Connect through SSH**.
+2. Enter the SSH server address, port (usually `22`), and SSH username.
+3. Enter the SSH server's trusted `SHA256:…` host-key fingerprint. Ask the
+   server administrator for it or read it from a trusted server console.
+   For example, on a server with an Ed25519 host key, run
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Copy the fingerprint
+   starting with `SHA256:`.
+4. Choose a private key file from your computer or paste its contents.
+   Enter the key passphrase if it is encrypted. The corresponding public
+   key needs to be authorized for the SSH user.
+5. Enter the database host and port as seen **from the SSH server**. If the
+   database runs on that host and listens on loopback, use `127.0.0.1:3306`.
+   Enter your database username and password separately.
+6. Choose **Test connection**, then **Test and save**. If MySQL uses TLS,
+   keep certificate verification enabled and use a database host name that
+   matches its certificate.
+
+The SSH server must allow TCP forwarding to the database. AbDbAdmin creates
+the tunnel inside the application and verifies the configured host-key
+fingerprint before authenticating. The private key and passphrase are stored
+encrypted with the connection profile. Leave the key field blank when editing
+to keep the saved key. Remove or replace the passphrase explicitly when needed.
+
 ### Browse a database
 
 Select a connection to expand its table list in the left sidebar and open
@@ -212,7 +237,12 @@ are excluded from the URL.
 On MySQL and MariaDB, administrators can open **Server status** to view
 live connection, query and traffic charts. Samples update every three seconds
 and the browser keeps up to ten minutes of history per account and connection.
-Server settings and the saved database account's grants are below the charts.
+The **Connections and queries** table refreshes with the charts, listing up
+to 100 visible sessions and a preview of their current SQL. Use **Active only**
+to hide sleeping sessions. Database accounts with the global `PROCESS`
+privilege can see sessions for other accounts. SQL displayed in this table
+is not written to dashboard history. Server settings and the saved database
+account's grants are below the table.
 In **Database objects**, use **SQL definition** to view the accessible
 creation statement for a routine, trigger, or event. **Open in SQL scripts**
 copies the statement into an editable draft. Running it still requires a

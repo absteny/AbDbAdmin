@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { tableViewSql } from './table-view.mjs';
 const visible = "table_schema NOT IN ('pg_catalog','information_schema') AND table_schema NOT LIKE 'pg_toast%' AND table_schema NOT LIKE 'pg_temp%'";
 const scope = (pg, alias = '') => pg ? visible.replaceAll('table_schema', alias + 'table_schema') : alias + 'table_schema = DATABASE()';
@@ -8,13 +9,59 @@ export function identifier(pg, value) {
   return quote + value.replaceAll(quote, quote + quote) + quote;
 }
 
+function sshError(code) {
+  return Object.assign(new Error(code),{code});
+}
+
+async function openSshChannel(profile) {
+  const {default:{Client}}=await import('ssh2');
+  const {host,port,user,privateKey,passphrase,fingerprint}=profile.ssh;
+  const ssh=new Client();
+  const expected=Buffer.from(fingerprint.slice(7),'base64');
+  let verified=false, failure;
+  try {
+    const channel=await new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(sshError('SSH_TIMEOUT')),10000);
+      const settle=(error,stream)=>{
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(stream);
+      };
+      ssh.on('error',error=>settle(sshError(failure ??
+        (error.level==='client-authentication'?'SSH_AUTH_FAILED':error.level==='client-timeout'?'SSH_TIMEOUT':'SSH_CONNECTION_FAILED'))));
+      ssh.once('close',()=>settle(sshError(failure ?? 'SSH_CONNECTION_FAILED')));
+      ssh.once('ready',()=>{
+        ssh.forwardOut('127.0.0.1',0,profile.host,profile.port,(error,stream)=>{
+          if (error) {settle(sshError('SSH_FORWARD_FAILED'));return;}
+          stream.on('error',()=>{});
+          settle(null,stream);
+        });
+      });
+      try {
+        ssh.connect({host,port,username:user,privateKey,passphrase:passphrase || undefined,readyTimeout:7000,hostVerifier:raw=>{
+          const actual=createHash('sha256').update(raw).digest();
+          verified=expected.length===actual.length && timingSafeEqual(expected,actual);
+          if (!verified) failure='SSH_HOST_KEY_MISMATCH';
+          return verified;
+        }});
+      } catch (error) {
+        settle(sshError(/privateKey/i.test(error.message)?'SSH_KEY_INVALID':'SSH_CONNECTION_FAILED'));
+      }
+    });
+    return {channel,ssh};
+  } catch (error) {
+    ssh.destroy();
+    throw error;
+  }
+}
+
 export async function withDatabase(profile, fn, {scripts=false}={}) {
   const pg = profile.engine === 'postgres';
   const address = {
     host: profile.host, port: profile.port, user: profile.user,
     password: profile.password, database: profile.database,
   };
-  let client;
+  let client, tunnel;
   let Query;
   try {
     if (pg) {
@@ -30,8 +77,9 @@ export async function withDatabase(profile, fn, {scripts=false}={}) {
       await client.connect();
     } else {
       const { default: mysql } = await import('mysql2');
+      if (profile.ssh) tunnel=await openSshChannel(profile);
       client = mysql.createConnection({
-        ...address, connectTimeout: 5000, multipleStatements: scripts, rowsAsArray: true, flags: '-LOCAL_FILES',
+        ...address, ...(tunnel?{stream:tunnel.channel}:{}), connectTimeout: 5000, multipleStatements: scripts, rowsAsArray: true, flags: '-LOCAL_FILES',
         supportBigNumbers: true, bigNumberStrings: true, dateStrings: true,
         ssl: profile.tls ? { rejectUnauthorized: true, verifyIdentity: true, ca: profile.ca || undefined } : undefined,
       });
@@ -134,7 +182,10 @@ export async function withDatabase(profile, fn, {scripts=false}={}) {
     });
   } finally {
     if (pg) await client?.end();
-    else client?.destroy();
+    else {
+      client?.destroy();
+      tunnel?.ssh.destroy();
+    }
   }
 }
 
