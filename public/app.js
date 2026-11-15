@@ -264,7 +264,7 @@ function render() {
   const schemaReady=workspace?loadWorkspaceSchema(active.id,stamp,tableSidebar):null;
   const heading = div('hero',e('h1',{},utility?t(pages[state.view]):active?.name || t('Подключения')),
     active && !utility ? e('p',{},engine+' · '+t(labelKeys[active.level])+(active.production?' · PRODUCTION':'')) : null);
-  app.replaceChildren(div(workspace?'shell schema-shell'+(state.view==='structure'?' catalog-shell':''):'shell',div('sidebar',
+  app.replaceChildren(div(workspace?'shell schema-shell':'shell',div('sidebar',
     brand(),
     div('row spread',e('span',{class:'nav-heading'},t('Подключения')),admin?button('+',()=>editConnection(), 'primary',{'aria-label':t('Добавить подключение')}):null),
     div('nav connection-tree',state.connections.map(connection=>div('connection-branch',
