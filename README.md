@@ -73,6 +73,31 @@ on the same Docker network and use the database service name. For a database
 on a separate machine, enter its reachable address and allow connections
 from the Docker host on the database side.
 
+### Filter rows and save a view
+
+Open a table and select **Filters and sorting**. Add up to eight conditions
+joined with AND. **Contains** searches within the text representation of a
+value and treats percent signs and underscores literally. **Equals** compares
+text using the database's comparison rules. You can also filter by NULL and
+choose a sort column. CSV exports use the active filters, sort, and offset.
+
+Open **Saved views**, enter a name, and save the current filters and sort.
+Views belong to your account and the selected connection and table. Saving
+the same name replaces the existing view. Filter values travel as URL query
+parameters when loading rows or downloading CSV. Avoid logging query strings
+at your reverse proxy if filters may contain sensitive values.
+
+### Review row changes
+
+Use **Review changes** after editing or inserting a row. Deleting from the
+row editor opens the same preview. The preview shows the connection,
+schema, table, primary key when available, and before/after values. Set
+**Production database** in the connection settings to highlight this target.
+The write runs only after confirmation. For edits and deletes, the panel
+checks whether the row has changed since it was loaded before applying the
+operation. Database defaults, generated values, triggers, and cascades can
+affect the final result. The preview applies to the row editor.
+
 ### Permissions
 
 | Level | What it allows |

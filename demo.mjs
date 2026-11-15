@@ -1,3 +1,4 @@
+import { tableViewSql } from './table-view.mjs';
 import { DatabaseSync } from 'node:sqlite';
 
 const fixture = new DatabaseSync(':memory:');
@@ -28,10 +29,16 @@ export function demoStructure() {
   };
 }
 
-export function demoRows(schema, table, offset, limit) {
+export function demoRows(schema, table, offset, limit, view = {filters:[]}) {
   if (schema!=='store' || !tables.includes(table)) return null;
-  const query = fixture.prepare('SELECT * FROM "'+table+'" ORDER BY rowid LIMIT ? OFFSET ?');
-  query.setReturnArrays(true);
   const definition = fields.all(table).map(field=>[field.name,field.type,field.notnull || field.pk ? 'NO' : 'YES',Boolean(field.pk)]);
-  return {columns:definition.map(field=>field[0]),definition,rows:query.all(limit,offset),affected:null};
+  const args = [];
+  const clause = tableViewSql(definition,view,'sqlite',value=>'"'+value.replaceAll('"','""')+'"',value=>{
+    args.push(value);
+    return '?';
+  });
+  if (clause===null) return {invalidView:true};
+  const query = fixture.prepare('SELECT * FROM "'+table+'"'+clause+' LIMIT ? OFFSET ?');
+  query.setReturnArrays(true);
+  return {columns:definition.map(field=>field[0]),definition,rows:query.all(...args,limit,offset),affected:null};
 }

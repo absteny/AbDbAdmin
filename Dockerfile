@@ -3,7 +3,7 @@ WORKDIR /app
 ENV NODE_ENV=production DATA_DIR=/app/data BIND_HOST=0.0.0.0 PORT=8099
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && install -d -o node -g node -m 0700 /app/data
-COPY server.mjs database.mjs demo.mjs LICENSE THIRD_PARTY_NOTICES.txt ./
+COPY server.mjs database.mjs demo.mjs table-view.mjs LICENSE THIRD_PARTY_NOTICES.txt ./
 COPY public/ ./public/
 USER node
 EXPOSE 8099

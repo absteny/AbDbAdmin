@@ -1,3 +1,4 @@
+import { tableViewSql } from './table-view.mjs';
 const visible = "table_schema NOT IN ('pg_catalog','information_schema') AND table_schema NOT LIKE 'pg_toast%' AND table_schema NOT LIKE 'pg_temp%'";
 const scope = (pg, alias = '') => pg ? visible.replaceAll('table_schema', alias + 'table_schema') : alias + 'table_schema = DATABASE()';
 const timeout = 10000;
@@ -39,6 +40,18 @@ export async function withDatabase(profile, fn) {
     }
     return await fn({
       pg,
+      async transaction(callback) {
+        const control = pg ? client : client.promise();
+        await control.query('START TRANSACTION');
+        try {
+          const result = await callback();
+          await control.query('COMMIT');
+          return result;
+        } catch (error) {
+          try {await control.query('ROLLBACK');} catch {}
+          throw error;
+        }
+      },
       async query(sql, values = [], cap = Infinity) {
         return new Promise((resolve, reject) => {
           const rows = [];
@@ -121,14 +134,18 @@ export async function relations({query, pg}) {
   return (await query(sql)).rows;
 }
 
-export async function tableData(db, schema, table, offset, limit) {
+export async function tableData(db, schema, table, offset, limit, view = {filters:[]}) {
   const definition = await columns(db, schema, table);
   if (!definition.length) return null;
   const quote = value => identifier(db.pg, value);
-  const primary = definition.filter(column => column[3]).map(column => quote(column[0]));
-  const order = primary.length ? ' ORDER BY ' + primary.join(', ') : '';
+  const args = [];
+  const clause = tableViewSql(definition,view,db.pg?'postgres':'mysql',quote,value=>{
+    args.push(value);
+    return db.pg?'$'+args.length:'?';
+  });
+  if (clause===null) return {invalidView:true};
   return {
-    ...await db.query(`SELECT * FROM ${quote(schema)}.${quote(table)}${order} LIMIT ${limit} OFFSET ${offset}`),
+    ...await db.query(`SELECT * FROM ${quote(schema)}.${quote(table)}${clause} LIMIT ${limit} OFFSET ${offset}`,args),
     definition,
   };
 }

@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomBytes, scryptSync, createHash, timingSafeEqual, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomBytes, scryptSync, createHash, createHmac, timingSafeEqual, createCipheriv, createDecipheriv } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -35,6 +35,12 @@ database.exec(`
     connection_id INTEGER REFERENCES connections ON DELETE CASCADE,
     level TEXT NOT NULL CHECK(level IN ('view','edit','sql')),
     PRIMARY KEY(user_id, connection_id)
+  );
+  CREATE TABLE IF NOT EXISTS saved_views (
+    id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
+    connection_id INTEGER NOT NULL REFERENCES connections ON DELETE CASCADE,
+    schema_name TEXT NOT NULL, table_name TEXT NOT NULL, name TEXT NOT NULL, config TEXT NOT NULL,
+    UNIQUE(user_id,connection_id,schema_name,table_name,name)
   );
   CREATE TABLE IF NOT EXISTS sessions (
     hash TEXT PRIMARY KEY, user_id INTEGER REFERENCES users ON DELETE CASCADE, expires INTEGER NOT NULL
@@ -202,7 +208,7 @@ function configuration(input, previous) {
   requireValue([name,host,user,database].every(value => typeof value === 'string' && value.trim() && value.length <= 255));
   requireValue(!/[\s/\\\x00]/.test(host) && Number.isInteger(port) && port > 0 && port <= 65535);
   requireValue(typeof password === 'string' && password.length <= 4096 && typeof ca === 'string' && ca.length <= 32768);
-  return {name:name.trim(), engine, host, port, user, database, password, tls, ca};
+  return {name:name.trim(), engine, host, port, user, database, password, tls, ca, production:input.production===undefined ? Boolean(previous?.production) : input.production===true};
 }
 function access(user, id) {
   const record = user.admin
@@ -246,7 +252,28 @@ async function remote(profile, fn) {
 function rowResult(result, max = 200) {
   return {...result, truncated:result.rows.length > max, rows:result.rows.slice(0,max).map(row => row.map(limitText))};
 }
-async function changeRow(db, schema, table, input) {
+function tableView(input) {
+  const validColumn = value => typeof value==='string' && value.length>0 && value.length<=255;
+  const filters = input?.filters;
+  const sort = input?.sort ?? null;
+  requireValue(Array.isArray(filters) && filters.length<=8 && filters.every(filter=>
+    validColumn(filter?.column) && ['eq','contains','null','not-null'].includes(filter.operator) &&
+    (['null','not-null'].includes(filter.operator) || typeof filter.value==='string' && filter.value.length<=512)));
+  requireValue(sort===null || validColumn(sort.column) && ['asc','desc'].includes(sort.direction));
+  return {filters:filters.map(({column,operator,value})=>({column,operator,value:['null','not-null'].includes(operator)?'':value})),sort:sort===null?null:{column:sort.column,direction:sort.direction}};
+}
+function readView(url) {
+  const raw = url.searchParams.get('filter');
+  if (raw===null) return {filters:[],sort:null};
+  let input;
+  try {input=JSON.parse(raw);} catch {throw new RequestError(400,'Некорректный JSON');}
+  return tableView(input);
+}
+
+function rowToken(record,schema,table,row) {
+  return createHmac('sha256',key).update(JSON.stringify([record.id,record.secret,schema,table,row])).digest('hex');
+}
+async function changeRow(db, schema, table, input, record) {
   const fields = await columns(db,schema,table);
   requireValue(fields.length, 'Таблица недоступна', 404);
   const tableType = await db.query(
@@ -278,7 +305,15 @@ async function changeRow(db, schema, table, input) {
       'UPDATE '+target+' SET '+entries.map(([name,value])=>quote(name)+'='+bind(value)).join(', ');
     sql = start + ' WHERE ' + keys.map(name=>quote(name)+'='+bind(input.key[name])).join(' AND ');
   }
-  return {affected:(await db.query(sql,args)).affected};
+  if (op==='insert' || input.snapshot===undefined) return {affected:(await db.query(sql,args)).affected};
+  requireValue(typeof input.snapshot==='string' && /^[a-f0-9]{64}$/.test(input.snapshot));
+  const condition=keys.map((name,index)=>quote(name)+'='+(db.pg?'$'+(index+1):'?')).join(' AND ');
+  return db.transaction(async ()=>{
+    const current=await db.query('SELECT * FROM '+target+' WHERE '+condition+' FOR UPDATE',keys.map(name=>input.key[name]),1);
+    requireValue(current.rows.length && rowToken(record,schema,table,current.rows[0])===input.snapshot,
+      'Строка изменилась. Обновите таблицу перед повтором.',409);
+    return {affected:(await db.query(sql,args)).affected};
+  });
 }
 function cell(value) {
   let text = value == null ? '' : String(value);
@@ -395,8 +430,9 @@ async function api(req, res, url, event) {
     if (action==='rows' && method==='POST') event.action = 'row.write';
     if (action==='csv' && method==='GET') event.action = 'csv.export';
     if (!id && method === 'GET') {
-      return user.admin ? database.prepare("SELECT id,name,engine,'admin' AS level FROM connections ORDER BY name").all()
-        : database.prepare('SELECT c.id,c.name,c.engine,p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE p.user_id=? ORDER BY c.name').all(user.id);
+      const entries = user.admin ? database.prepare("SELECT id,name,engine,secret,'admin' AS level FROM connections ORDER BY name").all()
+        : database.prepare('SELECT c.id,c.name,c.engine,c.secret,p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE p.user_id=? ORDER BY c.name').all(user.id);
+      return entries.map(({secret,...entry})=>({...entry,production:entry.engine!=='demo' && Boolean(reveal(secret).production)}));
     }
     if (!id && method === 'POST') {
       requireValue(user.admin,'Требуются права администратора',403);
@@ -438,15 +474,43 @@ async function api(req, res, url, event) {
         requireValue(typeof sql === 'string' && sql.trim() && sql.length <= 65000,'Введите SQL-запрос');
         return remote(profile,async db=>rowResult(await db.query(sql,[],201)));
       }
-      if (['rows','csv'].includes(action)) {
+      if (['rows','csv','views'].includes(action)) {
         const schema = url.searchParams.get('schema');
         const table = url.searchParams.get('table');
         requireValue(schema && table && schema.length <= 255 && table.length <= 255);
+        if (action==='views') {
+          const scope = [user.id,record.id,schema,table];
+          const where = 'user_id=? AND connection_id=? AND schema_name=? AND table_name=?';
+          if (method==='GET') {
+            return database.prepare('SELECT id,name,config FROM saved_views WHERE '+where+' ORDER BY name')
+              .all(...scope).map(view=>({id:view.id,name:view.name,view:reveal(view.config)}));
+          }
+          if (method==='POST') {
+            const input = await body(req);
+            const name = typeof input.name==='string' ? input.name.trim() : '';
+            requireValue(name.length>0 && name.length<=80);
+            const view = tableView(input.view);
+            const existing = database.prepare('SELECT id FROM saved_views WHERE '+where+' AND name=?').get(...scope,name);
+            requireValue(existing || database.prepare('SELECT count(*) AS total FROM saved_views WHERE user_id=?').get(user.id).total<250);
+            database.prepare('INSERT INTO saved_views(user_id,connection_id,schema_name,table_name,name,config) VALUES (?,?,?,?,?,?) ON CONFLICT(user_id,connection_id,schema_name,table_name,name) DO UPDATE SET config=excluded.config')
+              .run(...scope,name,protect(view));
+            return {};
+          }
+          if (method==='DELETE') {
+            const id = safeId(url.searchParams.get('id'));
+            requireValue(id!==null);
+            database.prepare('DELETE FROM saved_views WHERE '+where+' AND id=?').run(...scope,id);
+            return {};
+          }
+          throw new RequestError(404,'Страница не найдена');
+        }
         if (method === 'GET') {
           const offset = Number(url.searchParams.get('offset') || 0);
           requireValue(Number.isSafeInteger(offset) && offset >= 0 && offset <= 1000000);
           const limit = action==='csv'?501:51;
-          const result = demo ? demoRows(schema,table,offset,limit) : await remote(profile, db=>tableData(db,schema,table,offset,limit));
+          const view=readView(url);
+          const result = demo ? demoRows(schema,table,offset,limit,view) : await remote(profile, db=>tableData(db,schema,table,offset,limit,view));
+          requireValue(!result?.invalidView,'Столбец недоступен');
           requireValue(result,'Таблица недоступна',404);
           if (action === 'csv') {
             const page = rowResult(result,500);
@@ -458,6 +522,7 @@ async function api(req, res, url, event) {
             return;
           }
           const page = rowResult(result,50);
+          if (!demo && record.level!=='view') page.snapshots=result.rows.slice(0,50).map(row=>rowToken(record,schema,table,row));
           for (const row of result.rows) {
             for (const [index,value] of row.entries()) {
               if (result.definition[index]?.[3] && (typeof value === 'string' && value.length > 4096 || typeof value === 'number' && !Number.isFinite(value) || Buffer.isBuffer(value) || (value && typeof value === 'object'))) {
@@ -471,7 +536,7 @@ async function api(req, res, url, event) {
           requireValue(!demo && record.level !== 'view','Нет права изменять строки',403);
           const input = await body(req);
           if (['insert','update','delete'].includes(input.action)) event.action='row.'+input.action;
-          return remote(profile,db=>changeRow(db,schema,table,input));
+          return remote(profile,db=>changeRow(db,schema,table,input,record));
         }
       }
     }

@@ -62,6 +62,7 @@ async function api(path, method='GET', payload) {
   const value = await response.json();
   if (!response.ok) {
     if (response.status === 401 && !['login','session'].includes(path)) {
+      tableViews.clear();
       state.user = null;
       if (dialog.open) dialog.close();
       login();
@@ -71,7 +72,20 @@ async function api(path, method='GET', payload) {
   return value;
 }
 const route = tail=>`connections/${state.connection.id}/${tail}`;
-const rowParams = ()=>new URLSearchParams({schema:state.table[0],table:state.table[1],offset:state.offset});
+const tableViews = new Map();
+const tableScope = ()=>JSON.stringify([state.connection.id,...state.table.slice(0,2)]);
+const currentTableView = ()=>tableViews.get(tableScope()) ?? {filters:[],sort:null};
+const rowParams = (filtered=true)=>{
+  const params=new URLSearchParams({schema:state.table[0],table:state.table[1],offset:state.offset});
+  const view=currentTableView();
+  if (filtered && (view.filters.length || view.sort)) params.set('filter',JSON.stringify(view));
+  return params;
+};
+function applyTableView(view) {
+  tableViews.set(tableScope(),view);
+  state.offset=0;
+  render();
+}
 
 function form(children, text, callback, footer=[]) {
   const error = e('p',{class:'form-error',role:'alert'});
@@ -141,7 +155,7 @@ function render() {
   const engine = active && t(labelKeys[active.engine] ?? active.engine);
   const content = div('stack');
   const heading = div('hero',e('h1',{},utility?t(pages[state.view]):active?.name || t('Подключения')),
-    active && !utility ? e('p',{},engine+' · '+t(labelKeys[active.level])) : null);
+    active && !utility ? e('p',{},engine+' · '+t(labelKeys[active.level])+(active.production?' · PRODUCTION':'')) : null);
   app.replaceChildren(div('shell',div('sidebar',
     brand(),
     div('row spread',e('span',{class:'nav-heading'},t('Подключения')),admin?button('+',()=>editConnection(), 'primary',{'aria-label':t('Добавить подключение')}):null),
@@ -153,7 +167,7 @@ function render() {
       button(t('Демо'),()=>setView('demo'),null,{'aria-current':String(state.view==='demo')})):null,
     div('grow'),
     div('stack',languagePicker(),e('small',{},state.user.name),button(t('Сменить пароль'),changePassword),button(t('Выйти'),click(async()=>{
-      await api('logout','POST');state.user=null;login();
+      await api('logout','POST');tableViews.clear();state.user=null;login();
     }))),
   ),e('main',{class:'main stack'},heading,
     active && !utility ? div('row tabs',
@@ -190,6 +204,7 @@ function editConnection(config={}, id=null) {
     label(t('Название'),field('name','text',config.name,{required:true,maxlength:255}),'wide'),
     label(t('СУБД'),engine),
     label(t('Порт'),port),
+    e('label',{class:'check wide'},field('production','checkbox','1',{checked:config.production}),t('Рабочая база (production)')),
     label(t('Хост'),field('host','text',config.host,{required:true,placeholder:'db.example.net'})),
     label(t('База данных'),field('database','text',config.database,{required:true})),
     label(t('Пользователь БД'),field('user','text',config.user,{required:true})),
@@ -201,6 +216,7 @@ function editConnection(config={}, id=null) {
   ),t('Проверить и сохранить'),async data=>{
     data.port=Number(data.port);
     data.tls=Boolean(data.tls);
+    data.production=Boolean(data.production);
     if (id && !data.password && !data.resetPassword) delete data.password;
     if (id && !data.ca && !data.removeCa) delete data.ca;
     let next = id;
@@ -336,7 +352,16 @@ async function loadTables(target,stamp) {
   target.append(div('panel row spread',div('grow',label(t('Поиск таблиц'),search)),div('grow',label(t('Таблица или представление'),selection)),
     button(t('Обновить структуру'),()=>{state.schema=null;state.table=null;state.offset=0;render();})));
   const path = route('rows')+'?'+rowParams();
-  const data = await api(path);
+  let data;
+  try { data = await api(path); }
+  catch (error) {
+    if (stamp!==renderId) return;
+    const view=currentTableView();
+    if (!view.filters.length && !view.sort) throw error;
+    if (stamp===renderId) target.append(div('panel stack',e('p',{role:'alert'},error.message),
+      button(t('Сбросить фильтры'),()=>applyTableView({filters:[],sort:null}))));
+    return;
+  }
   if (stamp!==renderId) return;
   const editable = state.connection.engine!=='demo' && state.connection.level!=='view' && state.table[2]==='BASE TABLE';
   const hasKeys = data.definition.some(field=>field[3]) && !data.unsafeKey;
@@ -344,6 +369,11 @@ async function loadTables(target,stamp) {
   const csv = e('a',{href:'/api/'+route('csv')+'?'+rowParams()},t('CSV · до 500 строк'));
   target.append(div('panel stack',
     div('row spread',e('h2',{},state.table[1]),div('row',csv,editable?button(t('Добавить строку'),()=>rowDialog(data,path),'primary'):null)),
+    div('row',
+      button(t('Фильтры и сортировка'),()=>filterDialog(data.columns)),
+      button(t('Сохранённые представления'),click(savedViews)),
+      currentTableView().filters.length || currentTableView().sort
+        ? button(t('Сбросить фильтры'),()=>applyTableView({filters:[],sort:null})) : null),
     resultTable(data,actions?row=>button(t('Изменить'),()=>rowDialog(data,path,row)):null),
     div('row spread',e('small',{},data.rows.length?t('Строки {start}–{end}',{start:state.offset+1,end:state.offset+data.rows.length}):t('Строк нет')),
       div('row',button(t('Назад'),()=>{state.offset-=50;render();},null,{disabled:!state.offset}),
@@ -361,6 +391,61 @@ function resultTable(data,actions) {
     e('tbody',{},data.rows.map(row=>e('tr',{},row.map(value=>e('td',{},value==null?e('i',{},'NULL'):String(value))),actions?e('td',{class:'actions'},actions(row)):null))),
   ));
 }
+function filterDialog(columns) {
+  const view=currentTableView();
+  const items=div('stack');
+  const choices=columns.map(name=>[name,name]);
+  const sort=select('sort',[['',t('По умолчанию')],...choices],view.sort?.column ?? '');
+  const direction=select('direction',[['asc',t('По возрастанию')],['desc',t('По убыванию')]],view.sort?.direction ?? 'asc');
+  const add=button(t('Добавить условие'),()=>addFilter({column:columns[0],operator:'contains',value:''}));
+  function addFilter(filter) {
+    const column=select('column',choices,filter.column);
+    const operator=select('operator',[
+      ['contains',t('Содержит')],['eq',t('Равно')],['null','IS NULL'],['not-null','IS NOT NULL'],
+    ],filter.operator);
+    const value=field('value','text',filter.value,{maxlength:512});
+    const toggle=()=>{value.disabled=['null','not-null'].includes(operator.value);};
+    operator.addEventListener('change',toggle);
+    toggle();
+    const item=div('fields',
+      label(t('Столбец'),column),label(t('Условие'),operator),
+      label(t('Значение'),value),button(t('Удалить'),()=>{
+        item.remove();add.disabled=false;
+      }));
+    items.append(item);
+    add.disabled=items.children.length>=8;
+  }
+  view.filters.forEach(addFilter);
+  openDialog(t('Фильтры и сортировка'),form([
+    items,add,div('fields',label(t('Сортировка'),sort),label(t('Порядок'),direction)),
+  ],t('Применить'),async ()=>{
+    const filters=Array.from(items.children,item=>Object.fromEntries(
+      Array.from(item.querySelectorAll('input,select'),control=>[control.name,control.value])));
+    dialog.close();
+    applyTableView({filters,sort:sort.value?{column:sort.value,direction:direction.value}:null});
+  }));
+}
+
+async function savedViews() {
+  const path=route('views')+'?'+rowParams(false);
+  const scope=tableScope();
+  const list=await api(path);
+  if (!state.connection || !state.table || scope!==tableScope()) return;
+  openDialog(t('Сохранённые представления'),div('stack',
+    list.length ? list.map(item=>div('row spread',e('strong',{},item.name),div('row',
+      button(t('Применить'),()=>{dialog.close();applyTableView(item.view);}),
+      button(t('Удалить'),()=>confirmAction(t('Удалить представление?'),item.name,async ()=>{
+        await api(path+'&id='+item.id,'DELETE');
+        render();
+      }),'danger')))) : e('p',{},t('Представлений пока нет')),
+    form([e('p',{},t('Сохранение с тем же именем заменит существующее представление.')),
+      label(t('Название'),field('name','text','',{required:true,maxlength:80}))],
+      t('Сохранить текущий вид'),async data=>{
+        await api(path,'POST',{name:data.name,view:currentTableView()});
+        dialog.close();
+      })));
+}
+
 function rowDialog(data,path,row) {
   const key = Object.fromEntries(data.definition.filter(field=>field[3]).map(([name])=>[name,row?.[data.columns.indexOf(name)]]));
   const fields = data.definition.map(([name,type],index)=>{
@@ -369,19 +454,42 @@ function rowDialog(data,path,row) {
     mode.addEventListener('change',()=>{input.hidden=mode.value!=='value';});
     return div('table-picker',label(name+' · '+type,mode),input);
   });
-  openDialog(row?t('Изменить строку'):t('Добавить строку'),form(fields,t('Сохранить'),async dataInput=>{
+  const title=row?t('Изменить строку'):t('Добавить строку');
+  const editor=form(fields,t('Предпросмотр изменений'),async dataInput=>{
     const values = Object.fromEntries(data.definition.flatMap(([name],index)=>{
       const mode = dataInput['mode'+index];
       if (mode==='skip') return [];
       return [[name,mode==='null'?null:dataInput['value'+index]]];
     }));
-    await api(path,'POST',{action:row?'update':'insert',values,key});
-    dialog.close();
-    render();
-  },row?button(t('Удалить строку'),()=>confirmAction(t('Удалить строку?'),t('Строка будет удалена из базы данных.'),async ()=>{
-    await api(path,'POST',{action:'delete',key});render();
-  }),'danger'):[]));
+    if (row && !Object.keys(values).length) throw new Error(t('Выберите хотя бы один столбец для изменения.'));
+    preview(row?'update':'insert',values);
+  },row?button(t('Удалить строку'),()=>preview('delete',{}),'danger'):[]);
+  function preview(action,values) {
+    const names=action==='update'?Object.keys(values):data.columns;
+    const before=data.columns.map((name,index)=>[name,row?.[index]]);
+    const original=new Map(before);
+    const target=[state.connection.name,state.table[0],state.table[1]].join(' / ');
+    const changes=names.map(name=>[
+      name,row ? original.get(name) : '—',
+      action==='delete' ? '—' : Object.hasOwn(values,name) ? values[name] : t('По умолчанию'),
+    ]);
+    const production=state.connection.production;
+    openDialog(t('Предпросмотр изменений'),form([
+      e('strong',{},(production?'PRODUCTION · ':'')+target),
+      e('p',{},t(action==='delete'?'Удалить строку':action==='insert'?'Добавить строку':'Изменить строку')+' · 1'),
+      row?e('small',{},t('Первичный ключ')+' · '+JSON.stringify(key)):null,
+      resultTable({columns:[t('Столбец'),t('Было'),t('Станет')],rows:changes}),
+      e('small',{},t('Показаны данные, загруженные в таблицу. База может изменить итоговые значения.')),
+    ],t('Подтвердить'),async ()=>{
+      const result=await api(path,'POST',{action,values,key,snapshot:row?data.snapshots?.[data.rows.indexOf(row)]:undefined});
+      dialog.close();
+      if (Number.isInteger(result.affected)) toast(t('Затронуто строк: {count}',{count:result.affected}));
+      render();
+    },button(t('Назад'),()=>openDialog(title,editor))));
+  }
+  openDialog(title,editor);
 }
+
 function sqlView(target) {
   const output = div('panel stack');
   target.append(div('panel stack',e('h2',{},t('SQL-консоль')),
