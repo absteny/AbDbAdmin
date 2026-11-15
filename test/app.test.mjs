@@ -167,6 +167,19 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
     if (pg) {
       await request(conn+'/structure-editor','GET',undefined,admin,403);
     } else {
+      const objects=await request(conn+'/database-objects','GET',undefined,admin);
+      assert.deepEqual(Object.keys(objects.body),['routines','triggers','events']);
+      const csvRoute=conn+'/csv-import';
+      const input={table:'clay_parent',csv:'id,label\r\n803,"Needle, with ""quotes"""\r\n'};
+      await request(csvRoute,'POST',input,reader,404);
+      const preview=await request(csvRoute,'POST',input,admin);
+      assert.equal(preview.body.rows,1);
+      assert.equal((await withDatabase(profile,db=>db.query('SELECT id FROM clay_parent WHERE id=803'))).rows.length,0);
+      await request(csvRoute,'POST',{...input,csv:input.csv.replace('803','804'),confirmation:preview.body.confirmation},admin,409);
+      await request(csvRoute,'POST',{...input,confirmation:preview.body.confirmation},admin);
+      const results=await request(conn+'/database-search','POST',{text:'needle'},admin);
+      assert.ok(results.body.results.some(result=>result.table==='clay_parent' && result.rows[0][0]==='Needle, with "quotes"'));
+      await withDatabase(profile,db=>db.query('DELETE FROM clay_parent WHERE id=803'));
       const editor=conn+'/structure-editor';
       const grant='users/'+readerId+'/permissions';
       await request(grant,'PUT',{connection:id,level:'sql'},admin);

@@ -174,6 +174,8 @@ function render() {
     active && !utility ? div('row tabs',
       ...[['structure',t('Структура')],['tables',t('Обзор')],['graph',t('3D-схема')],...(!demo && ['admin','sql'].includes(active.level)?[['sql','SQL']]:[])]
         .map(([key,title])=>button(title,()=>setView(key),null,{'aria-current':String(state.view===key)})),
+      mysqlWorkspace?button(t('Поиск по базе'),()=>setView('database-search'),null,{'aria-current':String(state.view==='database-search')}):null,
+      admin && mysqlWorkspace?button(t('Объекты БД'),()=>setView('database-objects'),null,{'aria-current':String(state.view==='database-objects')}):null,
       admin && mysqlWorkspace?button(t('Редактор структуры'),()=>setView('schema-editor'),null,{'aria-current':String(state.view==='schema-editor')}):null,
       admin && !demo?button(t('Настройки'),click(async()=>editConnection(await api(route('settings')),active.id))):null,
     ):null,content)));
@@ -187,6 +189,8 @@ function render() {
     return;
   }
   if (state.view === 'sql') return sqlView(content);
+  if (state.view==='database-search' && mysqlWorkspace) return databaseSearchView(content,stamp);
+  if (state.view==='database-objects' && mysqlWorkspace && admin) return databaseObjectsView(content,stamp).catch(error=>showError(content,stamp,error));
   if (state.view === 'schema-editor' && admin && mysqlWorkspace) return schemaEditor(content,stamp).catch(error=>showError(content,stamp,error));
   loadTables(content,stamp).catch(error=>showError(content,stamp,error));
 }
@@ -300,7 +304,7 @@ const auditActions = {
   'user.create':'Создание пользователя','user.delete':'Удаление пользователя','permission.change':'Изменение прав',
   'connection.create':'Создание подключения','connection.update':'Изменение подключения','connection.delete':'Удаление подключения',
   'sql.execute':'Выполнение SQL','row.write':'Операция со строкой','row.insert':'Добавление строки',
-  'row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры',
+  'row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры','csv.import':'Импорт CSV',
 };
 
 async function auditView(target,stamp,before=null) {
@@ -347,6 +351,67 @@ function demoView(target) {
     e('p',{},t('Откройте 3D-схему, найдите связь orders → customers и откройте orders. Сравните customer_id в заказах с id в customers.')),
     button(t('Открыть 3D-схему'),click(async ()=>{await choose(demo.id);setView('graph');}),null,{disabled:!demo}),
   ));
+}
+
+function databaseSearchView(target,stamp) {
+  const path=route('database-search');
+  const output=div('stack');
+  async function search(text,offset) {
+    const page=await api(path,'POST',{text,offset});
+    if (stamp!==renderId) return;
+    output.replaceChildren(...page.results.map(result=>div('panel stack',
+      e('h3',{},result.schema+'.'+result.table),
+      resultTable(result),
+      result.more?e('small',{},t('Показаны первые пять совпадений.')):null)));
+    if (!page.results.length) output.append(e('p',{},t('В этой группе таблиц совпадений нет.')));
+    if (page.next!==null) output.append(button(t('Следующие таблицы'),click(()=>search(text,page.next))));
+  }
+  target.append(div('panel stack',e('h2',{},t('Поиск по базе')),
+    e('p',{},t('Поиск текста по столбцам. Проверяет до пяти таблиц за один запрос.')),
+    form(label(t('Текст поиска'),field('text','search','',{required:true,maxlength:200})),t('Найти'),
+      async ({text})=>search(text,0))),output);
+}
+
+async function databaseObjectsView(target,stamp) {
+  const data=await api(route('database-objects'));
+  if (stamp!==renderId) return;
+  const lists=[
+    ['Процедуры и функции',['Имя','Тип','Доступ к данным'],data.routines],
+    ['Триггеры',['Имя','Таблица','Момент','Действие'],data.triggers],
+    ['События',['Имя','Статус','Тип'],data.events],
+  ];
+  for (const [title,headers,rows] of lists) target.append(div('panel stack',
+    e('h2',{},t(title)),rows.length?resultTable({columns:headers.map(header=>t(header)),rows}):e('p',{},t('Объекты не найдены.'))));
+}
+
+function openCsvImport() {
+  const table=state.table[1];
+  const target=state.connection.name+' / '+state.table[0]+' / '+table;
+  const path=route('csv-import');
+  const file=field('file','file',undefined,{required:true,accept:'.csv,text/csv'});
+  const editor=form([
+    e('strong',{},(state.connection.production?'PRODUCTION · ':'')+target),
+    e('p',{},t('CSV в UTF-8 с заголовками столбцов и разделителем-запятой. До 200 строк и 64 КБ.')),
+    label(t('CSV-файл'),file),
+  ],t('Предпросмотр изменений'),async ()=>{
+    const selected=file.files[0];
+    if (!selected || selected.size>65536) throw new Error(t('Выберите CSV-файл размером до 64 КБ.'));
+    let csv;
+    try { csv=new TextDecoder('utf-8',{fatal:true}).decode(await selected.arrayBuffer()); }
+    catch {throw new Error(t('Файл должен быть в UTF-8.'));}
+    const preview=await api(path,'POST',{table,csv});
+    openDialog(t('Импорт CSV'),form([
+      e('strong',{},target),
+      e('p',{},t('Будет добавлено строк: {count}',{count:preview.rows})),
+      e('p',{},preview.columns.join(', ')),
+    ],t('Подтвердить'),async ()=>{
+      const result=await api(path,'POST',{table,csv,confirmation:preview.confirmation});
+      dialog.close();
+      toast(t('Добавлено строк: {count}',{count:result.rows}));
+      render();
+    },button(t('Назад'),()=>openDialog(t('Импорт CSV'),editor))));
+  });
+  openDialog(t('Импорт CSV'),editor);
 }
 
 async function schemaEditor(target,stamp) {
@@ -526,7 +591,8 @@ async function loadTables(target,stamp) {
   const actions = editable && hasKeys;
   const csv = e('a',{href:'/api/'+route('csv')+'?'+rowParams()},t('CSV · до 500 строк'));
   target.append(div('panel stack',
-    div('row spread',e('h2',{},state.table[1]),div('row',csv,editable?button(t('Добавить строку'),()=>rowDialog(data,path),'primary'):null)),
+    div('row spread',e('h2',{},state.table[1]),div('row',csv,state.user.admin && editable && ['mysql','mariadb'].includes(state.connection.engine)
+      ? button(t('Импорт CSV'),openCsvImport):null,editable?button(t('Добавить строку'),()=>rowDialog(data,path),'primary'):null)),
     div('row',
       button(t('Фильтры и сортировка'),()=>filterDialog(data.columns)),
       button(t('Сохранённые представления'),click(savedViews)),

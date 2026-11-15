@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
+import { parseCsv, importCsv, searchDatabase, databaseObjects } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes } from './schema-editor.mjs';
 import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
@@ -185,13 +186,13 @@ function requireValue(condition, message = 'Проверьте заполнен�
 function cookie(value, age) {
   return `claydb_session=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}` + (secure ? '; Secure' : '');
 }
-async function body(req) {
+async function body(req,maxBytes=131072) {
   requireValue(req.headers['content-type']?.split(';')[0] === 'application/json', 'Ожидается JSON', 415);
   const chunks = [];
   let bytes = 0;
   for await (const chunk of req) {
     bytes += chunk.length;
-    requireValue(bytes <= 131072, 'Запрос слишком большой', 413);
+    requireValue(bytes <= maxBytes, 'Запрос слишком большой', 413);
     chunks.push(chunk);
   }
   let value;
@@ -508,6 +509,32 @@ async function api(req, res, url, event) {
       }
       const demo = record.engine==='demo';
       const profile = demo ? null : reveal(record.secret);
+      const mysql = ['mysql','mariadb'].includes(record.engine);
+      if (action==='database-objects' && method==='GET') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        return remote(profile,db=>databaseObjects(db,profile.database));
+      }
+      if (action==='database-search' && method==='POST') {
+        requireValue(mysql,'Эта функция доступна для MySQL и MariaDB',400);
+        const {text,offset=0}=await body(req);
+        requireValue(typeof text==='string' && text.trim().length>0 && text.length<=200 && Number.isSafeInteger(offset) && offset>=0 && offset<=500);
+        return remote(profile,db=>searchDatabase(db,text.trim(),offset));
+      }
+      if (action==='csv-import' && method==='POST') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        const {csv,table,confirmation}=await body(req,420000);
+        requireValue(typeof csv==='string' && Buffer.byteLength(csv)<=65536 && typeof table==='string' && table.length>0 && table.length<=64);
+        let parsed;
+        try {parsed=parseCsv(csv);} catch {throw new RequestError(400,'Нужен CSV с заголовком и не более чем 200 строками одинаковой ширины');}
+        const [header,...rows]=parsed;
+        const expected=createHmac('sha256',key).update(JSON.stringify(['csv',user.id,record.id,record.secret,table,csv])).digest('hex');
+        const apply=confirmation!==undefined;
+        requireValue(!apply || confirmation===expected,'Сначала откройте предпросмотр изменений',409);
+        if (apply) event.action='csv.import';
+        const result=await remote(profile,db=>importCsv(db,profile.database,table,header,rows,apply));
+        requireValue(result,'Для импорта нужна таблица InnoDB и совпадающие названия столбцов');
+        return apply?result:{...result,confirmation:expected};
+      }
       if (action==='structure-editor') {
         requireValue(user.admin && ['mysql','mariadb'].includes(record.engine),'Требуются права администратора',403);
         if (method==='GET') {

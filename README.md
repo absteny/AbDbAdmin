@@ -142,6 +142,19 @@ before applying a change and records the result in the AbDbAdmin audit log.
 It uses the saved database account and is scoped to the connection's database.
 The built-in editor requires no companion container.
 
+### Import CSV, search, and inspect database objects
+
+On a MySQL or MariaDB connection, an administrator can open an InnoDB table
+and choose **Import CSV**. Use a UTF-8 comma-separated file with a header
+matching the target columns, up to 200 data rows and 64 KB. The preview
+shows the destination, row count, and column names. Empty fields import as
+empty strings. The import uses parameterized inserts and a transaction.
+
+**Database search** searches text fields across the visible tables, up to
+five tables per request, 30 text columns per table, and five displayed
+matches per table. **Database objects** shows routines, triggers, and
+events visible to the connected database account.
+
 ### Review row changes
 
 Use **Review changes** after editing or inserting a row. Deleting from the
