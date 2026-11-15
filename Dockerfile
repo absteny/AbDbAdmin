@@ -2,6 +2,7 @@ FROM node:24-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production DATA_DIR=/app/data BIND_HOST=0.0.0.0 PORT=8099
 COPY package.json package-lock.json ./
+RUN apt-get update && apt-get install -y --no-install-recommends putty-tools && rm -rf /var/lib/apt/lists/*
 RUN npm ci --omit=dev && install -d -o node -g node -m 0700 /app/data
 COPY server.mjs database.mjs table-view.mjs schema-editor.mjs native-tools.mjs LICENSE THIRD_PARTY_NOTICES.txt ./
 COPY public/ ./public/

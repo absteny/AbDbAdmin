@@ -332,6 +332,11 @@ async function remote(profile, fn, diagnosing=false, options) {
   catch (error) {
     if (error instanceof RequestError) throw error;
     const messages = {
+      SSH_PUBLIC_KEY_ONLY:'Загружен публичный SSH-ключ. Выберите файл приватного ключа PuTTY или OpenSSH.',
+      SSH_PASSPHRASE_REQUIRED:'Приватный SSH-ключ зашифрован. Введите его парольную фразу.',
+      SSH_PASSPHRASE_WRONG:'Парольная фраза SSH-ключа не подошла. Проверьте её и повторите подключение.',
+      SSH_PPK_INVALID:'Не удалось прочитать ключ PuTTY. Откройте файл в PuTTYgen или экспортируйте его в OpenSSH.',
+      SSH_PPK_CONVERTER_UNAVAILABLE:'Конвертер PuTTY недоступен. Пересоберите контейнер или экспортируйте ключ в OpenSSH.',
       SSH_KEY_INVALID:'Не удалось прочитать SSH-ключ. Проверьте формат ключа и парольную фразу.',
       SSH_HOST_KEY_MISMATCH:'Отпечаток SSH-сервера отличается от указанного.',
       SSH_AUTH_FAILED:'SSH-сервер отклонил ключ. Проверьте пользователя и разрешённые ключи.',

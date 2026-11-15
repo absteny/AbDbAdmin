@@ -1,3 +1,8 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { tableViewSql } from './table-view.mjs';
 const visible = "table_schema NOT IN ('pg_catalog','information_schema') AND table_schema NOT LIKE 'pg_toast%' AND table_schema NOT LIKE 'pg_temp%'";
@@ -36,11 +41,43 @@ export async function observeSshHostKey({host,port}) {
   } finally {ssh.destroy();}
 }
 
+const runConverter=promisify(execFile);
+
+async function normalizeSshPrivateKey(privateKey,passphrase) {
+  const text=privateKey.trim();
+  if (/^(?:ssh-(?:rsa|ed25519|dss) |ecdsa-sha2-.*? |-----BEGIN (?:RSA )?PUBLIC KEY-----|---- BEGIN SSH2 PUBLIC KEY ----)/.test(text)) {
+    throw sshError('SSH_PUBLIC_KEY_ONLY');
+  }
+  if (!/^PuTTY-User-Key-File-[23]:/.test(text)) return text;
+  const encrypted=/^Encryption: (?!none\r?$)\S+/m.test(text);
+  if (encrypted && !passphrase) throw sshError('SSH_PASSPHRASE_REQUIRED');
+  if (/[\r\n\x00]/.test(passphrase) || [['Memory',262144],['Passes',100],['Parallelism',16]].some(([key,max])=>{
+    const value=new RegExp('^Argon2-'+key+': (.+)$','m').exec(text)?.[1];
+    return value!==undefined && (!/^\d+$/.test(value.trim()) || Number(value)>max);
+  })) throw sshError('SSH_PPK_INVALID');
+  let directory;
+  try {
+    directory=await mkdtemp(join(tmpdir(),'abdb-ppk-'));
+    const source=join(directory,'input.ppk'), secret=join(directory,'passphrase'), destination=join(directory,'openssh');
+    await Promise.all([writeFile(source,text+'\n',{mode:0o600}),writeFile(secret,passphrase+'\n',{mode:0o600})]);
+    await runConverter('puttygen',[source,'-O','private-openssh-new','-o',destination,
+      '--old-passphrase',secret,'--new-passphrase',secret],{timeout:8000,maxBuffer:8192});
+    return await readFile(destination);
+  } catch (error) {
+    if (error.code==='ENOENT' || error.code==='EROFS' || error.code==='EACCES') throw sshError('SSH_PPK_CONVERTER_UNAVAILABLE');
+    if (encrypted && /passphrase/i.test(error.stderr ?? '')) throw sshError('SSH_PASSPHRASE_WRONG');
+    throw sshError('SSH_PPK_INVALID');
+  } finally {
+    if (directory) await rm(directory,{recursive:true,force:true});
+  }
+}
+
 async function openSshChannel(profile) {
   const {default:{Client}}=await import('ssh2');
   const {host,port,user,privateKey,passphrase,fingerprint}=profile.ssh;
-  const ssh=new Client();
   if (!fingerprint) throw sshError('SSH_HOST_KEY_UNCONFIGURED');
+  const key=await normalizeSshPrivateKey(privateKey,passphrase);
+  const ssh=new Client();
   const expected=Buffer.from(fingerprint.slice(7),'base64');
   let verified=false, failure;
   try {
@@ -62,14 +99,18 @@ async function openSshChannel(profile) {
         });
       });
       try {
-        ssh.connect({host,port,username:user,privateKey,passphrase:passphrase || undefined,readyTimeout:7000,hostVerifier:raw=>{
+        ssh.connect({host,port,username:user,privateKey:key,passphrase:passphrase || undefined,readyTimeout:7000,hostVerifier:raw=>{
           const actual=createHash('sha256').update(raw).digest();
           verified=expected.length===actual.length && timingSafeEqual(expected,actual);
           if (!verified) failure='SSH_HOST_KEY_MISMATCH';
           return verified;
         }});
       } catch (error) {
-        settle(sshError(/privateKey/i.test(error.message)?'SSH_KEY_INVALID':'SSH_CONNECTION_FAILED'));
+        const message=error.message;
+        const code=/no passphrase|passphrase is required/i.test(message)?'SSH_PASSPHRASE_REQUIRED'
+          :/bad passphrase|incorrect passphrase/i.test(message)?'SSH_PASSPHRASE_WRONG'
+          :/privateKey/i.test(message)?'SSH_KEY_INVALID':'SSH_CONNECTION_FAILED';
+        settle(sshError(code));
       }
     });
     return {channel,ssh};

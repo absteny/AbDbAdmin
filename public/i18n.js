@@ -1,4 +1,9 @@
 const english = {
+  "Загружен публичный SSH-ключ. Выберите файл приватного ключа PuTTY или OpenSSH.": "This is a public SSH key. Select a private PuTTY or OpenSSH key.",
+  "Приватный SSH-ключ зашифрован. Введите его парольную фразу.": "The private SSH key is encrypted. Enter its passphrase.",
+  "Парольная фраза SSH-ключа не подошла. Проверьте её и повторите подключение.": "The SSH key passphrase was incorrect. Check it and try again.",
+  "Не удалось прочитать ключ PuTTY. Откройте файл в PuTTYgen или экспортируйте его в OpenSSH.": "Could not read the PuTTY key. Open the file in PuTTYgen or export it to OpenSSH.",
+  "Конвертер PuTTY недоступен. Пересоберите контейнер или экспортируйте ключ в OpenSSH.": "The PuTTY converter is unavailable. Rebuild the container or export the key to OpenSSH.",
   "Подтвердите ключ SSH-сервера": "Confirm the SSH server key",
   "Подтвердите ключ SSH-сервера перед первым подключением.": "Confirm the SSH server key before connecting for the first time.",
   "Сверьте отпечаток с данными администратора SSH-сервера. Продолжайте, если он совпадает.": "Compare the fingerprint with the SSH server administrator's records. Continue if it matches.",

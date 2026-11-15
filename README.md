@@ -116,8 +116,11 @@ from the Docker host on the database side.
 1. Select **Through SSH** at the top of the connection form, then choose
    **MySQL** or **MariaDB**.
 2. Enter the SSH server address, port (usually `22`), and SSH username.
-3. Choose a private key file or paste its contents. Enter its passphrase
-   if it is encrypted. Authorize the corresponding public key on the SSH server.
+3. Choose a private OpenSSH or PuTTY `.ppk` key file or paste its contents.
+   Enter its passphrase if it is encrypted. Authorize the corresponding
+   public key on the SSH server. The Docker image includes PuTTYgen for
+   converting PuTTY keys. For a manual installation, install PuTTYgen or
+   export the key to OpenSSH before uploading it.
 4. Enter the database host and port as seen from the SSH server. If the
    database runs on the same server and listens on loopback, use
    `127.0.0.1:3306`. Enter your database username and password separately.

@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { get } from 'node:http';
 import { connect } from 'node:net';
 import ssh2 from 'ssh2';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -253,6 +253,23 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
         }
         const invalid=await request('connection-test','POST',{...tunneled,ssh:{...ssh,passphrase:'wrong'}},admin,502);
         assert.match(invalid.body.error,/passphrase/i);
+        if (process.env.TEST_PUTTYGEN==='1') {
+          const source=join(directory,'ssh-fixture'), pass=join(directory,'ssh-fixture-pass'), ppk=join(directory,'ssh-fixture.ppk');
+          await writeFile(source,keypair.private,{mode:0o600});
+          await writeFile(pass,passphrase+'\n',{mode:0o600});
+          execFileSync('puttygen',[source,'-O','private','-o',ppk,'--old-passphrase',pass,'--new-passphrase',pass,
+            '--ppk-param','version=3'],{stdio:'pipe'});
+          const privateKey=await readFile(ppk,'utf8');
+          assert.match(privateKey,/^PuTTY-User-Key-File-3: ssh-ed25519/);
+          const ppkProfile={...tunneled,ssh:{...ssh,privateKey}};
+          await request('connection-test','POST',ppkProfile,admin);
+          const wrong=await request('connection-test','POST',{...ppkProfile,ssh:{...ppkProfile.ssh,passphrase:'wrong'}},admin,502);
+          assert.match(wrong.body.error,/passphrase/i);
+          const noPass=await request('connection-test','POST',{...ppkProfile,ssh:{...ppkProfile.ssh,passphrase:''}},admin,502);
+          assert.match(noPass.body.error,/encrypted/i);
+        }
+        const publicOnly=await request('connection-test','POST',{...tunneled,ssh:{...ssh,privateKey:keypair.public}},admin,502);
+        assert.match(publicOnly.body.error,/public ssh key/i);
         await request('connection-test','POST',tunneled,admin);
         const savedId=(await request('connections','POST',tunneled,admin)).body.id;
         const savedPath='connections/'+savedId;
