@@ -152,6 +152,13 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       await db.query('CREATE TABLE clay_child (id INT PRIMARY KEY, parent_id INT, FOREIGN KEY (parent_id) REFERENCES clay_parent(id))');
       await db.query("INSERT INTO clay_parent(id,label) VALUES (1,'original')");
     });
+    await request('connection-test','POST',profile,reader,403);
+    const diagnostic = await request('connection-test','POST',profile,admin);
+    assert.ok(diagnostic.body.peer);
+    const denied = await request('connection-test','POST',{...profile,password:'wrong-password'},admin,502);
+    assert.match(denied.body.error,/password/i);
+    assert.ok(!JSON.stringify(denied.body).includes('wrong-password'));
+    if (!pg) assert.ok(denied.body.peer);
     const {body:{id}} = await request('connections','POST',profile,admin);
     const saved = await readFile(join(directory,'claydb.sqlite-wal'));
     assert.equal(saved.includes(profile.password),false);

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { createServer } from 'node:http';
 import { randomBytes, scryptSync, createHash, createHmac, timingSafeEqual, createCipheriv, createDecipheriv } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -230,7 +231,17 @@ const limitText = value => {
   return value;
 };
 let active = 0;
-async function remote(profile, fn) {
+const sourceIp = isIP(process.env.ABDB_DB_SOURCE_IP || '') ? process.env.ABDB_DB_SOURCE_IP : null;
+function databasePeer(value) {
+  return typeof value==='string' && value.length<=253 && (isIP(value) || /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(value)) ? value : null;
+}
+async function testConnection(profile) {
+  return remote(profile,async db=>{
+    const {rows}=await db.query(db.pg ? 'SELECT host(inet_client_addr())' : "SELECT SUBSTRING_INDEX(USER(), '@', -1)");
+    return {peer:databasePeer(rows[0]?.[0])};
+  },true);
+}
+async function remote(profile, fn, diagnosing=false) {
   requireValue(active < 12, 'Слишком много одновременных запросов', 503);
   active++;
   try { return await withDatabase(profile, fn); }
@@ -242,7 +253,14 @@ async function remote(profile, fn) {
       ETIMEDOUT:'Сервер БД не ответил вовремя',
       QUERY_TIMEOUT:'Истекло время ожидания запроса',
       PROTOCOL_SEQUENCE_TIMEOUT:'Истекло время ожидания запроса',
-      ER_ACCESS_DENIED_ERROR:'База отклонила вход. Проверьте пользователя и пароль',
+      ER_ACCESS_DENIED_ERROR:'MySQL или MariaDB отклонила вход. Проверьте пароль и разрешённый хост учётной записи на сервере БД.',
+      ER_HOST_NOT_PRIVILEGED:'Сервер БД не разрешает подключения с этого хоста.',
+      ER_DBACCESS_DENIED_ERROR:'Учётной записи не выдан доступ к выбранной базе данных.',
+      '42501':'У учётной записи недостаточно прав для этой операции.',
+      EHOSTUNREACH:'Хост БД недоступен. Проверьте сеть, VPN и правила доступа.',
+      EAI_AGAIN:'Не удалось разрешить имя хоста БД. Проверьте DNS и повторите попытку.',
+      CERT_HAS_EXPIRED:'Срок действия TLS-сертификата БД истёк.',
+      DEPTH_ZERO_SELF_SIGNED_CERT:'Сертификат БД не доверен. Проверьте PEM-сертификат CA',
       '28P01':'База отклонила вход. Проверьте пользователя и пароль',
       ER_BAD_DB_ERROR:'Указанная база данных не найдена',
       '3D000':'Указанная база данных не найдена',
@@ -251,7 +269,14 @@ async function remote(profile, fn) {
     };
     const code = typeof error.code === 'string' && /^[A-Z0-9_]{1,60}$/.test(error.code) ? ' ('+error.code+')' : '';
     const message = Object.hasOwn(messages,error.code) ? messages[error.code] : 'Сервер БД не выполнил запрос';
-    throw new RequestError(502, message + code);
+    const failure=new RequestError(502,message+code);
+    if (diagnosing && ['ER_ACCESS_DENIED_ERROR','ER_HOST_NOT_PRIVILEGED'].includes(error.code)) {
+      const reported=error.sqlMessage || error.message;
+      const match=typeof reported==='string' && (/@'([^'\r\n]+)' \(using password: (?:YES|NO)\)$/i.exec(reported) ||
+        /^Host '([^'\r\n]+)' is not allowed to connect/i.exec(reported));
+      failure.peer=databasePeer(match?.[1]);
+    }
+    throw failure;
   } finally { active--; }
 }
 function rowResult(result, max = 200) {
@@ -347,13 +372,25 @@ async function api(req, res, url, event) {
     database.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
     database.prepare('INSERT INTO sessions VALUES (?,?,?)').run(digest(session),record.id,Date.now()+sessionDuration);
     res.setHeader('Set-Cookie',cookie(session,sessionDuration/1000));
-    return {name:record.name,admin:record.admin,advancedUrl:advancedUrl(record)};
+    return {name:record.name,admin:record.admin,advancedUrl:advancedUrl(record),sourceIp:record.admin?sourceIp:null};
   }
 
   const session = /(?:^|;\s*)claydb_session=([\w-]{43})(?:;|$)/.exec(req.headers.cookie || '')?.[1];
   const user = session && database.prepare('SELECT u.id,u.name,u.admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>?').get(digest(session),Date.now());
   requireValue(user,'Войдите в панель',401);
   event.actor = user.name;
+  if (resource === 'connection-test' && method === 'POST') {
+    requireValue(user.admin,'Требуются права администратора',403);
+    const input=await body(req);
+    let previous;
+    if (input.id!==undefined && input.id!==null) {
+      requireValue(Number.isSafeInteger(input.id));
+      const record=access(user,input.id);
+      requireValue(record.engine!=='demo','Демо доступно только для чтения',403);
+      previous=reveal(record.secret);
+    }
+    return testConnection(configuration({...input,ca:input.ca ?? previous?.ca},previous));
+  }
   if (resource === 'audit' && method === 'GET') {
     requireValue(user.admin,'Требуются права администратора',403);
     const before = safeId(url.searchParams.get('before'));
@@ -370,7 +407,7 @@ async function api(req, res, url, event) {
     event.connection = demo.id;
     return demo;
   }
-  if (resource === 'session' && method === 'GET') return {...user,advancedUrl:advancedUrl(user)};
+  if (resource === 'session' && method === 'GET') return {...user,advancedUrl:advancedUrl(user),sourceIp:user.admin?sourceIp:null};
   if (resource === 'logout' && method === 'POST') {
     event.action = 'logout';
     database.prepare('DELETE FROM sessions WHERE hash=?').run(digest(session));
@@ -442,7 +479,7 @@ async function api(req, res, url, event) {
     if (!id && method === 'POST') {
       requireValue(user.admin,'Требуются права администратора',403);
       const profile = configuration(await body(req));
-      await remote(profile,db=>db.query('SELECT 1'));
+      await testConnection(profile);
       const {lastInsertRowid} = database.prepare('INSERT INTO connections(name,engine,secret) VALUES (?,?,?)').run(profile.name,profile.engine,protect(profile));
       event.connection = Number(lastInsertRowid);
       return {id:lastInsertRowid};
@@ -457,7 +494,7 @@ async function api(req, res, url, event) {
           const previous = reveal(record.secret);
           const input = await body(req);
           const profile = configuration({...input,ca:input.ca ?? previous.ca},previous);
-          await remote(profile,db=>db.query('SELECT 1'));
+          await testConnection(profile);
           const result = database.prepare('UPDATE connections SET name=?,engine=?,secret=? WHERE id=? AND secret=?').run(profile.name,profile.engine,protect(profile),id,record.secret);
           requireValue(result.changes,'Подключение было изменено. Откройте настройки снова.',409);
           return {};
@@ -591,6 +628,6 @@ createServer(async (req,res) => {
     res.setHeader('Content-Type','application/json; charset=utf-8');
     res.removeHeader('Content-Disposition');
     if (res.statusCode === 500) console.error('Application error',error.code || error.name);
-    res.end(JSON.stringify({error:t(res.statusCode === 500 ? 'Внутренняя ошибка' : error.message)}));
+    res.end(JSON.stringify({error:t(res.statusCode === 500 ? 'Внутренняя ошибка' : error.message),...(error instanceof RequestError && error.peer ? {peer:error.peer} : {})}));
   }
 }).listen(Number(process.env.PORT || 8099),process.env.BIND_HOST || '127.0.0.1',function () { console.log('AbDbAdmin listening on '+this.address().port); });

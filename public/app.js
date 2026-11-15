@@ -67,7 +67,7 @@ async function api(path, method='GET', payload) {
       if (dialog.open) dialog.close();
       login();
     }
-    throw new Error(value.error || t('Ошибка запроса'));
+    throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer});
   }
   return value;
 }
@@ -92,12 +92,12 @@ function form(children, text, callback, footer=[]) {
   return e('form',{class:'stack',onsubmit:async event=>{
     event.preventDefault();
     const target = event.currentTarget;
-    const action = target.querySelector('[type=submit]');
-    action.disabled = true;
+    const actions = target.querySelectorAll('[type=submit]');
+    actions.forEach(action=>{action.disabled=true;});
     error.textContent = '';
-    try {await callback(Object.fromEntries(new FormData(target)),target);}
+    try {await callback(Object.fromEntries(new FormData(target)),target,event.submitter);}
     catch (reason) {error.textContent = reason.message;}
-    finally {action.disabled = false;}
+    finally {actions.forEach(action=>{action.disabled=false;});}
   }},children,error,div('row',submit(text),footer));
 }
 function openDialog(title,children) {
@@ -201,7 +201,17 @@ function editConnection(config={}, id=null) {
   const engine = select('engine',[['postgres','PostgreSQL'],['mysql','MySQL'],['mariadb','MariaDB']],config.engine || 'postgres');
   const port = field('port','number',config.port || 5432,{min:1,max:65535,required:true});
   engine.addEventListener('change',()=>{port.value=engine.value==='postgres'?5432:3306;});
+  const observed=e('strong',{},t('Пока неизвестен'));
+  const status=e('small',{role:'status'});
+  const network=div('network wide stack',
+    e('strong',{},t('Ваш IP для доступа к БД')),
+    div('row',e('span',{},t('Адрес по данным сервера БД')),observed),
+    state.user.sourceIp ? div('row',e('span',{},t('Настроенный исходящий IP')),e('code',{},state.user.sourceIp)) : null,
+    e('small',{},t('Нажмите «Проверить подключение». Если сервер не сообщил адрес, уточните его в журнале БД или у администратора сети.')),
+    status,
+  );
   const content = form(div('fields',
+    network,
     label(t('Название'),field('name','text',config.name,{required:true,maxlength:255}),'wide'),
     label(t('СУБД'),engine),
     label(t('Порт'),port),
@@ -214,25 +224,38 @@ function editConnection(config={}, id=null) {
     label(config.customCa?t('Новый PEM-сертификат CA (текущий сохранён)'):t('PEM-сертификат CA (необязательно)'),e('textarea',{name:'ca'}),'wide'),
     config.customCa?e('label',{class:'check wide'},field('removeCa','checkbox','1'),t('Удалить сохранённый сертификат CA')):null,
     id?e('label',{class:'check wide'},field('resetPassword','checkbox','1'),t('Сохранить пустой пароль БД')):null,
-  ),t('Проверить и сохранить'),async data=>{
+  ),t('Проверить и сохранить'),async (data,_form,action)=>{
+    status.textContent='';
+    observed.textContent=t('Пока неизвестен');
     data.port=Number(data.port);
     data.tls=Boolean(data.tls);
     data.production=Boolean(data.production);
     if (id && !data.password && !data.resetPassword) delete data.password;
     if (id && !data.ca && !data.removeCa) delete data.ca;
     let next = id;
-    if (id) await api(`connections/${id}/settings`,'PUT',data);
-    else next = (await api('connections','POST',data)).id;
+    try {
+      if (action?.value==='test') {
+        const result=await api('connection-test','POST',{...data,id});
+        if (result.peer) observed.textContent=result.peer;
+        status.textContent=t('Подключение работает. Настройки не сохранены.');
+        return;
+      }
+      if (id) await api(`connections/${id}/settings`,'PUT',data);
+      else next = (await api('connections','POST',data)).id;
+    } catch (error) {
+      if (error.peer) observed.textContent=error.peer;
+      throw error;
+    }
     dialog.close();
     await refreshConnections();
     await choose(next);
     toast(t('Подключение сохранено'));
-  },id?button(t('Удалить подключение'),()=>confirmAction(t('Удалить подключение?'),
+  },[e('button',{type:'submit',value:'test'},t('Проверить подключение')),id?button(t('Удалить подключение'),()=>confirmAction(t('Удалить подключение?'),
     t('Профиль и выданные на него права будут удалены.'),async ()=>{
       await api('connections/'+id,'DELETE');
       await refreshConnections();
       render();
-    }),'danger'):[]);
+    }),'danger'):null]);
   openDialog(id?t('Настройки подключения'):t('Новое подключение'),content);
 }
 async function users(target,stamp) {
@@ -537,7 +560,7 @@ function graph(target) {
       return { ...node, x:width/2+x*fit*scale, y:height/2+z*Math.sin(pitch)*fit*scale, depth, scale:Math.max(.28,fit*scale) };
     }
     const points = positions.map(project);
-    context.strokeStyle='#7966b8a8';
+    context.strokeStyle='#227c8eb8';
     context.lineWidth=1.8;
     for (const [start,end] of edges) {
       const a=points[start], b=points[end];
@@ -554,11 +577,11 @@ function graph(target) {
       const w=145*scale, h=43*scale;
       context.beginPath();
       context.roundRect(x-w/2,y-h/2+7*scale,w,h,10*scale);
-      context.fillStyle='#aa99da';
+      context.fillStyle='#77aeb4';
       context.fill();
       const gradient=context.createLinearGradient(x-w/2,y-h/2,x+w/2,y+h/2);
-      gradient.addColorStop(0,'#fcf7ff');
-      gradient.addColorStop(1,'#c9baf1');
+      gradient.addColorStop(0,'#f3fffc');
+      gradient.addColorStop(1,'#a0dfcf');
       context.fillStyle=gradient;
       context.beginPath();
       context.roundRect(x-w/2,y-h/2,w,h,10*scale);
@@ -566,7 +589,7 @@ function graph(target) {
       context.strokeStyle='#fff9';
       context.lineWidth=1;
       context.stroke();
-      context.fillStyle='#352b54';
+      context.fillStyle='#124354';
       context.textAlign='center';
       context.textBaseline='middle';
       context.font=`600 ${Math.max(8,14*scale)}px system-ui`;
