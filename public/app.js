@@ -360,7 +360,7 @@ function editConnection(config={}, id=null) {
   const engine = select('engine',[['postgres','PostgreSQL'],['mysql','MySQL'],['mariadb','MariaDB']],config.engine || 'postgres');
   const port = field('port','number',config.port || 5432,{min:1,max:65535,required:true});
   engine.addEventListener('change',()=>{port.value=engine.value==='postgres'?5432:3306;});
-  const targetHost=field('host','text',config.host,{required:true,placeholder:'db.example.net'});
+  const targetHost=field('host','text',config.host ?? '127.0.0.1',{required:true,placeholder:'db.example.net'});
   const savedSsh=config.ssh;
   let useSsh=Boolean(savedSsh);
   const modeButton=(title,description,ssh)=>e('button',{type:'button',class:'connection-mode',
