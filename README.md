@@ -1,123 +1,169 @@
 # AbDbAdmin
 
-Самостоятельно размещаемая панель для PostgreSQL, MySQL и MariaDB. Подключения доступны из одной боковой панели. Пароли подключений хранятся на сервере в зашифрованном виде. Структуру базы можно исследовать на интерактивной 3D-схеме внешних ключей.
+A self-hosted administration panel for PostgreSQL, MySQL, and MariaDB. Browse
+and edit tables, run SQL, and explore foreign keys in an interactive 3D schema.
+Manage database access per user and review administrative activity in the audit log.
 
-## Установка
+## 1. Install on your computer
 
-На Linux или macOS, с Docker Engine и Docker Compose:
+Install Docker Engine 28 or newer with Docker Compose V2, or a current Docker Desktop. Open a terminal
+in the project directory. On Linux, macOS, or Windows with WSL, run:
 
 ```sh
-sh install.sh
+sh install.sh --local
 ```
 
-Установщик запустит контейнер, дождётся проверки готовности и выведет адреса и
-два логина с паролями. Сначала введите `gateway` в диалоге браузера, затем
-`admin` в форме панели. У аккаунтов панели индивидуальные пароли и права.
-Пароль `gateway` общий для экземпляра и нужен всем, кому разрешён доступ
-к панели. Передавайте его через менеджер паролей.
+Open [http://127.0.0.1:8099](http://127.0.0.1:8099).
 
-Адреса, которые выведет установщик:
+1. In the browser's Basic Auth dialog, enter **gateway** and the password under
+   **HTTP Basic Auth** in the terminal output.
+2. In the AbDbAdmin sign-in form, enter **admin** and the password under
+   **Panel sign-in**.
+3. Change the initial administrator password using **Change password**. The
+   gateway password is separate. Store it in your password manager.
+4. Choose **English** or **Russian** using the language selector. English is
+   the default, and your selection is remembered by that browser.
 
-| Адрес | Где используется |
-| --- | --- |
-| `http://127.0.0.1:8099` | На хосте с Docker или через SSH-туннель |
-| `http://{ip}:8099` | В доверенной изолированной сети после настройки привязки |
-| `http://{domain}:8080` | HTTP-переадресация на HTTPS после настройки прокси |
-| `https://{domain}` | Вход по домену через TLS |
+The `--local` flag overrides any external bind address in `.env`, publishes
+the Docker port on **127.0.0.1 only**, and makes AbDbAdmin reject other Host
+headers and standard forwarded headers. It also shows only the local URL.
+Leave this instance out of any reverse proxy, tunnel, or separate forwarding
+setup if you want access from the host only. Use [Docker Engine 28 or newer](https://docs.docker.com/engine/network/port-publishing/) for localhost port isolation.
+The flag controls inbound access
+to AbDbAdmin. It can still connect to a database on another machine.
 
-`ABDB_IP` и `ABDB_DOMAIN` в `.env` задают адреса для вывода. Без `ABDB_IP`
-установщик попробует определить адрес хоста. Без `ABDB_DOMAIN` он покажет
-шаблон. При использовании NAT укажите нужный IP явно. DNS, перенаправление
-и сертификат настраиваются на сервере отдельно. Скопируйте `.env.example`
-в `.env`, чтобы изменить настройки.
+For native PowerShell:
 
-В Windows через PowerShell, либо при запуске Compose вручную:
-
-```sh
+```powershell
+$env:ABDB_BIND = '127.0.0.1'
+$env:ABDB_LOCAL_ONLY = '1'
+$env:COOKIE_SECURE = '0'
 docker compose up --build -d --wait
 docker compose exec -T abdbadmin node --disable-warning=ExperimentalWarning server.mjs show-access
 ```
 
-### Доступ с другого компьютера
+## 2. Try the demo before connecting a real database
 
-По умолчанию порт Docker опубликован на `127.0.0.1`. С удалённого компьютера
-можно открыть туннель и использовать локальный адрес:
+Sign in as the administrator, open **Demo**, and select **Enable the demo**.
+The **Sample Store** connection uses a built-in, read-only database with
+synthetic customers, products, orders, and order items. It needs no database
+server, credentials, or network connection.
+
+| Scenario | Steps | Expected result |
+| --- | --- | --- |
+| Give a teammate read-only access | From **Demo**, select **Open users**. Create a practice user with a new password. Open the user's **Access**, set **Sample Store** to **View**, and save. Sign out of the panel and sign back in as the practice user. | **Sample Store** is visible. You can browse its rows and diagram. SQL and row-editing controls are unavailable. |
+| Find related tables in 3D | Sign back in as **admin**. In **Demo**, select **Open the 3D schema**. Find **orders** and **customers**, then open **orders** by selecting its block or using the table selector. | The diagram links **orders** to **customers**. The value of **orders.customer_id** matches **customers.id**. For example, order **101** belongs to customer **1**. |
+
+Use **Remove the demo** to delete the sample connection and its grants.
+Remove the practice user separately in **Users and permissions**.
+
+## 3. Connect your databases
+
+1. Select **Add connection** in the sidebar.
+2. Choose PostgreSQL, MySQL, or MariaDB. Enter the host, port, database name,
+   and a database account. AbDbAdmin tests the connection before saving it.
+3. Keep TLS certificate verification enabled. If your database uses a private
+   CA, paste its certificate in PEM format into the CA field.
+4. Select the saved connection. Use **Tables** to browse data, **3D schema**
+   to explore foreign keys, or **SQL** to run statements if you have access.
+
+The application runs inside Docker. From its perspective, `127.0.0.1` is
+the application container. To connect to another container, put both services
+on the same Docker network and use the database service name. For a database
+on a separate machine, enter its reachable address and allow connections
+from the Docker host on the database side.
+
+### Permissions
+
+| Level | What it allows |
+| --- | --- |
+| View | Browse tables and views, inspect the 3D diagram, and export CSV |
+| Edit rows | Everything in View, plus insert, update, and delete rows in base tables. Update and delete require a primary key. |
+| Run SQL | Everything in Edit rows, plus SQL with the privileges of the saved database account |
+| Administrator | All connections, users, permissions, the audit log, and demo setup |
+
+Give each saved database account only the privileges it needs. A user with
+**Run SQL** can reach any database objects allowed by that account, including
+objects outside the profile's main database when the database server allows it.
+
+### Audit log
+
+Administrators can open **Audit log** to see successful and failed panel
+sign-ins, sign-outs, password changes and local resets, user and permission
+changes, connection changes, demo activation, CSV exports, row writes, and SQL
+execution. Each event displays the time, action, outcome, and available actor
+and target identifiers. Failed sign-ins omit the submitted username.
+
+The log stores event metadata in the local settings database. It excludes
+passwords, session tokens, profile secrets, raw SQL, and row values. It keeps
+roughly the latest 10,000 events. The log is intended for operational review.
+It can be altered by someone with access to the local data volume, and an
+audit storage error can leave a gap after a database operation completes.
+
+## 4. Optional remote access
+
+Skip this section if you want the application on `127.0.0.1` only.
+
+**For a server you manage over SSH**, start the app on the server using
+`sh install.sh --local`. From your own computer, forward the port:
 
 ```sh
 ssh -N -L 8099:127.0.0.1:8099 user@server
 ```
 
-Для доступа по домену оставьте привязку к `127.0.0.1`. Настройте
-DNS, HTTPS-прокси на хосте и правило `http://{domain}:8080` → `https://{domain}`.
-Пример есть в [Caddyfile.example](Caddyfile.example). Замените в нём имя
-домена и, если меняли `ABDB_PORT`, порт обратного прокси. В `.env` задайте
-`ABDB_DOMAIN` и `COOKIE_SECURE=1`, затем снова выполните `sh install.sh`.
-HTTP Basic Auth передаёт пароль в обратимо кодированном виде.
-Используйте HTTPS или защищённый туннель для ввода данных по внешней сети.
+Open [http://127.0.0.1:8099](http://127.0.0.1:8099) on your computer.
 
-Чтобы по необходимости открыть IP-адрес в отдельной доверенной сети,
-укажите её адрес в `ABDB_BIND` и ограничьте входящие подключения
-сетевым экраном. По HTTP пароль доступен стороне, которая может наблюдать
-сетевой трафик. Для сети с другими пользователями используйте HTTPS.
+**For a team using a domain**, copy `.env.example` to `.env`. Set
+`ABDB_DOMAIN` to your DNS name and `COOKIE_SECURE=1`. Leave `ABDB_BIND`
+set to `127.0.0.1`, start with `sh install.sh` (without `--local`), and
+configure an HTTPS reverse proxy on the Docker host. Replace `db.example.com`
+in [Caddyfile.example](Caddyfile.example) with your domain. Point DNS at the
+server and open the ports required by your proxy. The example redirects
+`http://{domain}:8080` to `https://{domain}`. Enter credentials on the HTTPS
+address. Basic Auth credentials can be intercepted over plain HTTP.
 
-### Пароли и обновление
+If you deliberately publish the port on a private network interface,
+set `ABDB_BIND` to that interface, restrict it with a firewall, and use
+an encrypted transport for sign-in. `ABDB_IP` and `ABDB_DOMAIN` only set
+the addresses printed by the installer.
 
-Пароли `gateway` и `admin` генерируются независимо. Обычный перезапуск
-сохраняет их, а также аккаунты, подключения и разрешения. После смены пароля
-`admin` в панели исходный файл удаляется. Содержимое вывода установки
-следует считать секретом. Процесс приложения выводит в обычные журналы
-только адрес запуска и путь к файлу первоначального пароля.
+## 5. Operate and update
 
-```sh
-# Показать данные для входа в обычном локальном терминале.
-sh install.sh --show-access
-
-# Заменить общий пароль HTTP Basic Auth.
-docker compose exec -T abdbadmin node server.mjs reset-basic
-
-# Заменить пароль администратора и завершить его активные сессии.
-docker compose exec -T abdbadmin node server.mjs reset-admin
-```
-
-После смены `gateway` открытые браузеры запросят новый пароль. Кнопка
-«Выйти» завершает сессию панели. Браузер может кэшировать Basic Auth до
-закрытия приватного окна или закрытия браузера. При увольнении сотрудника
-удалите его аккаунт и при необходимости замените общий пароль.
-
-В предыдущей версии проект назывался ClayDB. Для сохранения данных
-остановите прежний экземпляр и запустите эту версию с тем же именем
-Compose-проекта. Если он назывался `claydb`, используйте
-`COMPOSE_PROJECT_NAME=claydb sh install.sh`. Том `claydb-data` и формат
-базы настроек сохранены. После проверки удалите прежний контейнер
-без удаления тома.
-
-## Подключения и пользователи
-
-1. Войдите как администратор и откройте **Добавить подключение**.
-2. Укажите СУБД, адрес сервера, базу, пользователя и пароль БД. AbDbAdmin проверит подключение перед сохранением. Проверка сертификата TLS включена по умолчанию. Для частного центра сертификации укажите CA в PEM.
-3. Выберите подключение в боковой панели. В разделе **Таблицы** доступны строки, структура столбцов и CSV. В разделе **3D-схема** можно вращать диаграмму, менять масштаб и открывать таблицы по нажатию.
-4. В разделе **Пользователи и права** создайте отдельный аккаунт для каждого человека. Откройте **Доступ** и сохраните уровень напротив нужного подключения.
-
-| Уровень | Возможности |
+| Task | Command |
 | --- | --- |
-| Нет доступа | Подключение скрыто и недоступно через API |
-| Просмотр | Таблицы, столбцы, 3D-схема, просмотр строк и CSV |
-| Редактирование строк | Просмотр, добавление, изменение и удаление строк. Для изменения и удаления нужен первичный ключ |
-| Доступ к SQL | Редактирование строк и выполнение SQL с правами сохранённого пользователя БД |
-| Администратор | Все подключения, SQL, настройки, пользователи и права |
+| Start or apply an update in local-only mode | `sh install.sh --local` |
+| Show access details for the running instance | `sh install.sh --show-access` |
+| Stop without deleting settings | `docker compose down` |
+| Rotate the shared Basic Auth password | `docker compose exec -T abdbadmin node server.mjs reset-basic` |
+| Reset the administrator password and revoke its sessions | `docker compose exec -T abdbadmin node server.mjs reset-admin` |
 
-Адрес базы разрешается из контейнера. Для базы в другом контейнере подключите оба контейнера к общей сети и используйте имя сервиса. Для внешней базы разрешите подключения с хоста AbDbAdmin на стороне сети и СУБД. Один профиль соответствует одной базе. PostgreSQL показывает доступные схемы внутри этой базы.
+After a reset, run `sh install.sh --show-access` from a private terminal.
+Installer output contains credentials. Avoid sharing it or recording it in
+public logs. Signing out ends the panel session. The browser can still cache
+Basic Auth credentials. Remove a departing user's panel account and rotate
+the gateway password when needed.
 
-## Эксплуатация
+Back up the entire `claydb-data` volume with the container stopped. It holds
+the local settings database, audit log, and the encryption key. Keep the
+volume and its backups private. `docker compose down -v` deletes the volume.
 
-- Для каждого профиля создавайте отдельного пользователя СУБД с нужными привилегиями. Уровень **Доступ к SQL** даёт возможность выполнять команды по всем объектам, доступным этому пользователю СУБД, включая другие базы или схемы, если сам сервер это разрешает. Для разделения доступа к таблицам используйте разные профили с ограниченными учётными записями БД.
-- Отключайте TLS до базы только в доверенной изолированной сети. Веб-доступ извне предоставляйте через HTTPS, частную сеть или SSH-туннель.
-- Для резервной копии остановите контейнер и скопируйте весь том, включая `claydb.sqlite` и `vault.key`. SQLite хранит аккаунты и зашифрованные профили. Доступ к ключу и базе вместе позволяет расшифровать профили, поэтому защищайте том и резервные копии как секреты. `docker compose down -v` удаляет том.
-- Запускайте один экземпляр панели на том. Настройки, пароли и данные БД в браузерных хранилищах не сохраняются. Браузер получает сессионную cookie и запрошенные для отображения данные.
-- Список показывает до 500 объектов БД, 3D-схема — до 120. Страница таблицы содержит 50 строк, CSV — до 500 строк с текущего смещения, SQL — до 200 строк первого набора результатов. Длинные значения отображаются и экспортируются в сокращённом виде, бинарные данные обозначаются размером. Для полного резервного копирования БД используйте штатные инструменты СУБД.
-- SQL-консоль выполняет одну команду за запрос и открывает новое подключение для каждого запроса. Многошаговые транзакции между вызовами отсутствуют. В MySQL и MariaDB доступны команды, поддерживаемые подготовленными выражениями на сервере.
+If updating from the older ClayDB package, reuse its Compose project name to
+keep the same volume, for example `COMPOSE_PROJECT_NAME=claydb sh install.sh --local`.
+Stop the former instance first.
 
-## Разработка
+## Limits and development
+
+The browser lists up to 500 database objects, displays 120 in the 3D schema,
+and loads 50 rows per page. A CSV export contains up to 500 rows from the
+current offset. SQL returns up to 200 rows from the first result set. Long
+values are abbreviated and binary values are represented by size. Use native
+database tools for full exports or backups.
+
+The console uses one statement and one database session per request.
+Multi-step transactions across requests are unavailable. For MySQL and
+MariaDB, the console supports statements allowed in prepared statements.
+
+For development, install Node.js 24 or later:
 
 ```sh
 npm ci
@@ -125,10 +171,12 @@ npm start
 npm test
 ```
 
-Требуется Node.js 24+. Для локального запуска данные панели хранятся в `./data`, если не задана переменная `DATA_DIR`. Интеграционный тест запускается на **отдельной тестовой БД** и меняет таблицы `clay_parent` и `clay_child`. В CI предусмотрены проверки с PostgreSQL, MySQL и MariaDB, а также сборка и запуск Docker-контейнера.
+Local development data goes to `./data` unless `DATA_DIR` is set. Run
+integration tests only on a disposable database. They change the tables
+`clay_parent` and `clay_child`. CI covers all three supported database engines
+and builds and starts the Docker image.
 
-## Лицензия
+## Licensing and security
 
-Код приложения распространяется по MIT. Условия сторонних компонентов
-приведены отдельно. См. [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
-и [LEGAL.md](LEGAL.md).
+See [LICENSE](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.txt),
+[licensing and data handling](LEGAL.md), and [security reporting](SECURITY.md).

@@ -1,19 +1,16 @@
-# Сообщения об уязвимостях
+# Security reporting
 
-Используйте **Security → Advisories → Report a vulnerability** в репозитории,
-если владелец включил приватную отправку отчётов. Если кнопки нет, запросите у
-владельца приватный канал, описав публично только то, что хотите передать
-отчёт о безопасности. Пароли, ключи, строки подключения, выгрузки и
-воспроизводящие инструкции для рабочего сервера передавайте только после
-согласования приватного канала и с данными тестовой среды.
+Use **Security → Advisories → Report a vulnerability** on GitHub if private
+reporting is enabled. Otherwise, ask the maintainer for a private contact
+channel without posting vulnerability details publicly.
 
-Укажите версию проекта, СУБД, конфигурацию развёртывания и ожидаемое поведение.
-Используйте синтетические данные и разрешённую тестовую инфраструктуру.
+Include the version, database engine, deployment configuration, and expected
+behavior. Reproduce issues using synthetic data and authorized test systems.
+Keep passwords, keys, connection strings, and database exports out of reports.
 
-## Развёртывание
+## Deployment
 
-Панель администрирует базы с привилегиями сохранённых пользователей СУБД.
-Ограничивайте эти привилегии и доступ к сети. Для входа извне используйте
-HTTPS или SSH-туннель. Защищайте том с ключом и резервные копии.
-Установщик выводит секреты в терминал. Запускайте его в своей сессии без
-общедоступной записи вывода или транскрипта.
+Restrict the database account privileges assigned to saved connections. For
+host-only use, install with `sh install.sh --local`. For remote use, use HTTPS
+or an encrypted tunnel. Keep the persistent volume and backups private. Run
+the installer in a private terminal because it prints credentials.

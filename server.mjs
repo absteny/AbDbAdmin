@@ -3,6 +3,8 @@ import { randomBytes, scryptSync, createHash, timingSafeEqual, createCipheriv, c
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { translate } from './public/i18n.js';
+import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
 
 process.umask(0o077);
@@ -15,6 +17,11 @@ database.exec(`
   PRAGMA journal_mode=WAL;
   PRAGMA foreign_keys=ON;
   PRAGMA busy_timeout=5000;
+  CREATE TABLE IF NOT EXISTS audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL,
+    actor TEXT, action TEXT NOT NULL, connection_id INTEGER, subject_id INTEGER,
+    status INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, admin INTEGER NOT NULL
@@ -22,6 +29,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS connections (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, engine TEXT NOT NULL, secret TEXT NOT NULL
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS singleton_demo ON connections(engine) WHERE engine='demo';
   CREATE TABLE IF NOT EXISTS permissions (
     user_id INTEGER REFERENCES users ON DELETE CASCADE,
     connection_id INTEGER REFERENCES connections ON DELETE CASCADE,
@@ -32,6 +40,22 @@ database.exec(`
     hash TEXT PRIMARY KEY, user_id INTEGER REFERENCES users ON DELETE CASCADE, expires INTEGER NOT NULL
   );
 `);
+
+const writeAudit = database.prepare('INSERT INTO audit(created_at,actor,action,connection_id,subject_id,status) VALUES (?,?,?,?,?,?)');
+const trimAudit = database.prepare('DELETE FROM audit WHERE id <= ?');
+function recordAudit(ctx,status) {
+  const {lastInsertRowid} = writeAudit.run(Date.now(),ctx.actor ?? null,ctx.action,ctx.connection ?? null,ctx.subject ?? null,status);
+  const id=Number(lastInsertRowid);
+  if (id%100===0) trimAudit.run(id-10000);
+}
+function audit(ctx,status) {
+  if (!ctx.action) return;
+  try {
+    recordAudit(ctx,status);
+  } catch (error) {
+    console.error('Audit write failed',error.code || error.name);
+  }
+}
 
 const keyPath = join(dataDir, 'vault.key');
 if (!database.prepare('SELECT 1 FROM connections LIMIT 1').get()) {
@@ -74,17 +98,20 @@ if (operation === 'reset-basic' || !basicSetting.get()) {
     database.exec('COMMIT');
   } catch (error) {database.exec('ROLLBACK');throw error;}
 }
-if (operation === 'reset-basic') process.exit(0);
+if (operation === 'reset-basic') {
+  audit({actor:'local-cli',action:'gateway.reset'},200);
+  process.exit(0);
+}
 if (operation === 'show-access') {
   const entry = database.prepare("SELECT value FROM settings WHERE name='basic_recovery'").get();
-  console.log('HTTP Basic Auth\nЛогин: gateway\nПароль: '+reveal(entry.value));
-  console.log('\nВход в панель\nЛогин: admin');
+  console.log('HTTP Basic Auth\nUsername: gateway\nPassword: '+reveal(entry.value));
+  console.log('\nPanel sign-in\nUsername: admin');
   try {
     const password = readFileSync(bootstrap,'utf8').trim();
-    console.log('Пароль: '+password);
+    console.log('Password: '+password);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
-    console.log('Используйте заданный ранее пароль администратора.');
+    console.log('Use your current administrator password.');
   }
   process.exit(0);
 }
@@ -112,16 +139,24 @@ if (reset || !database.prepare('SELECT 1 FROM users WHERE admin=1').get()) {
     }
     database.exec('COMMIT');
   } catch (error) { database.exec('ROLLBACK'); throw error; }
-  console.log('Пароль администратора записан в ' + bootstrap);
+  console.log('Administrator password saved to ' + bootstrap);
 }
-if (reset) process.exit(0);
+if (reset) {
+  audit({actor:'local-cli',action:'admin.reset'},200);
+  process.exit(0);
+}
 
 const secure = process.env.COOKIE_SECURE === '1';
+const localOnly = process.env.ABDB_LOCAL_ONLY === '1';
+function safeId(id) {
+  return /^\d+$/.test(id ?? '') && Number.isSafeInteger(Number(id)) ? Number(id) : null;
+}
 const sessionDuration = 8 * 60 * 60 * 1000;
 const rates = new Map();
 const paths = {
   '/': ['index.html','text/html; charset=utf-8'],
   '/style.css': ['style.css','text/css; charset=utf-8'],
+  '/i18n.js': ['i18n.js','text/javascript; charset=utf-8'],
   '/app.js': ['app.js','text/javascript; charset=utf-8'],
   '/fonts/inter-latin-wght-normal.woff2': ['fonts/inter-latin-wght-normal.woff2','font/woff2'],
   '/fonts/inter-cyrillic-wght-normal.woff2': ['fonts/inter-cyrillic-wght-normal.woff2','font/woff2'],
@@ -176,7 +211,7 @@ function access(user, id) {
 }
 const publicProfile = ({password, ca, ...rest}) => ({...rest, customCa:Boolean(ca)});
 const limitText = value => {
-  if (Buffer.isBuffer(value)) return '[бинарные данные: ' + value.length + ' байт]';
+  if (Buffer.isBuffer(value)) return '[binary: ' + value.length + ' bytes]';
   if (typeof value === 'string' && value.length > 4096) return value.slice(0,4096) + '…';
   if (value && typeof value === 'object' && !(value instanceof Date)) return limitText(JSON.stringify(value));
   return value;
@@ -249,7 +284,7 @@ function cell(value) {
   return '"' + text.replaceAll('"','""') + '"';
 }
 
-async function api(req, res, url) {
+async function api(req, res, url, event) {
   const parts = url.pathname.split('/').filter(Boolean);
   const [, resource, id, action] = parts;
   const method = req.method;
@@ -259,11 +294,13 @@ async function api(req, res, url) {
     requireValue(req.headers['x-abdbadmin'] === '1', 'Недопустимый запрос', 403);
   }
   if (resource === 'login' && method === 'POST') {
+    event.action = 'login';
     const {name,password} = await body(req);
     loginLimit(req);
     requireValue(userName(name) && typeof password === 'string' && password.length <= 256,'Неверный логин или пароль',401);
     const record = database.prepare('SELECT * FROM users WHERE name=?').get(name);
     requireValue(samePassword(password,record?.hash || fakeHash) && record,'Неверный логин или пароль',401);
+    event.actor = record.name;
     const session = token();
     database.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
     database.prepare('INSERT INTO sessions VALUES (?,?,?)').run(digest(session),record.id,Date.now()+sessionDuration);
@@ -274,13 +311,32 @@ async function api(req, res, url) {
   const session = /(?:^|;\s*)claydb_session=([\w-]{43})(?:;|$)/.exec(req.headers.cookie || '')?.[1];
   const user = session && database.prepare('SELECT u.id,u.name,u.admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>?').get(digest(session),Date.now());
   requireValue(user,'Войдите в панель',401);
+  event.actor = user.name;
+  if (resource === 'audit' && method === 'GET') {
+    requireValue(user.admin,'Требуются права администратора',403);
+    const before = safeId(url.searchParams.get('before'));
+    const entries = before === null
+      ? database.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 51').all()
+      : database.prepare('SELECT * FROM audit WHERE id<? ORDER BY id DESC LIMIT 51').all(before);
+    return {entries:entries.slice(0,50),next:entries.length>50 ? entries[49].id : null};
+  }
+  if (resource === 'demo' && method === 'POST') {
+    event.action = 'demo.enable';
+    requireValue(user.admin,'Требуются права администратора',403);
+    database.prepare("INSERT OR IGNORE INTO connections(name,engine,secret) VALUES ('Sample Store','demo','')").run();
+    const demo = database.prepare("SELECT id FROM connections WHERE engine='demo'").get();
+    event.connection = demo.id;
+    return demo;
+  }
   if (resource === 'session' && method === 'GET') return user;
   if (resource === 'logout' && method === 'POST') {
+    event.action = 'logout';
     database.prepare('DELETE FROM sessions WHERE hash=?').run(digest(session));
     res.setHeader('Set-Cookie',cookie('',0));
     return {};
   }
   if (resource === 'password' && method === 'POST') {
+    event.action = 'password.change';
     const input = await body(req);
     const record = database.prepare('SELECT hash FROM users WHERE id=?').get(user.id);
     requireValue(typeof input.current === 'string' && input.current.length <= 256 && samePassword(input.current,record.hash),'Текущий пароль неверен',403);
@@ -294,13 +350,17 @@ async function api(req, res, url) {
     return {};
   }
   if (resource === 'users') {
+    if (!id && method==='POST') event.action = 'user.create';
+    if (id && !action && method==='DELETE') event.action = 'user.delete';
+    if (id && action==='permissions' && method==='PUT') event.action = 'permission.change';
+    event.subject = safeId(id);
     requireValue(user.admin,'Требуются права администратора',403);
     if (!id && method === 'GET') return database.prepare('SELECT id,name,admin FROM users ORDER BY name').all();
     if (!id && method === 'POST') {
       const {name,password} = await body(req);
       requireValue(userName(name) && passwordValid(password),'Логин: 3–48 латинских символов, пароль: 12–256 символов');
       requireValue(!database.prepare('SELECT id FROM users WHERE name=?').get(name),'Логин уже занят',409);
-      database.prepare('INSERT INTO users(name,hash,admin) VALUES (?,?,0)').run(name,passwordHash(password));
+      event.subject = Number(database.prepare('INSERT INTO users(name,hash,admin) VALUES (?,?,0)').run(name,passwordHash(password)).lastInsertRowid);
       return {};
     }
     const target = database.prepare('SELECT * FROM users WHERE id=? AND admin=0').get(id);
@@ -310,8 +370,11 @@ async function api(req, res, url) {
     }
     if (method === 'PUT' && action === 'permissions') {
       const {connection,level} = await body(req);
+      event.connection = Number.isSafeInteger(connection) ? connection : null;
       requireValue(Number.isSafeInteger(connection) && [null,'view','edit','sql'].includes(level));
-      requireValue(database.prepare('SELECT 1 FROM connections WHERE id=?').get(connection),'Подключение недоступно',404);
+      const targetConnection=database.prepare('SELECT engine FROM connections WHERE id=?').get(connection);
+      requireValue(targetConnection,'Подключение недоступно',404);
+      requireValue(targetConnection.engine!=='demo' || level===null || level==='view','Демо доступно только для чтения',403);
       if (level) database.prepare('INSERT INTO permissions VALUES (?,?,?) ON CONFLICT(user_id,connection_id) DO UPDATE SET level=excluded.level').run(id,connection,level);
       else database.prepare('DELETE FROM permissions WHERE user_id=? AND connection_id=?').run(id,connection);
       return {};
@@ -322,6 +385,13 @@ async function api(req, res, url) {
     }
   }
   if (resource === 'connections') {
+    event.connection = safeId(id);
+    if (!id && method==='POST') event.action = 'connection.create';
+    if (id && !action && method==='DELETE') event.action = 'connection.delete';
+    if (action==='settings' && method==='PUT') event.action = 'connection.update';
+    if (action==='sql' && method==='POST') event.action = 'sql.execute';
+    if (action==='rows' && method==='POST') event.action = 'row.write';
+    if (action==='csv' && method==='GET') event.action = 'csv.export';
     if (!id && method === 'GET') {
       return user.admin ? database.prepare("SELECT id,name,engine,'admin' AS level FROM connections ORDER BY name").all()
         : database.prepare('SELECT c.id,c.name,c.engine,p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE p.user_id=? ORDER BY c.name').all(user.id);
@@ -331,11 +401,13 @@ async function api(req, res, url) {
       const profile = configuration(await body(req));
       await remote(profile,db=>db.query('SELECT 1'));
       const {lastInsertRowid} = database.prepare('INSERT INTO connections(name,engine,secret) VALUES (?,?,?)').run(profile.name,profile.engine,protect(profile));
+      event.connection = Number(lastInsertRowid);
       return {id:lastInsertRowid};
     }
     if (id) {
       const record = access(user,id);
       if (action === 'settings') {
+        requireValue(record.engine!=='demo','Демо доступно только для чтения',403);
         requireValue(user.admin,'Требуются права администратора',403);
         if (method === 'GET') return publicProfile(reveal(record.secret));
         if (method === 'PUT') {
@@ -353,12 +425,13 @@ async function api(req, res, url) {
         database.prepare('DELETE FROM connections WHERE id=?').run(id);
         return {};
       }
-      const profile = reveal(record.secret);
+      const demo = record.engine==='demo';
+      const profile = demo ? null : reveal(record.secret);
       if (action === 'schema' && method === 'GET') {
-        return remote(profile,async db=>({tables:await structure(db),relations:await relations(db)}));
+        return demo ? demoStructure() : remote(profile,async db=>({tables:await structure(db),relations:await relations(db)}));
       }
       if (action === 'sql' && method === 'POST') {
-        requireValue(['sql','admin'].includes(record.level),'Нет доступа к SQL',403);
+        requireValue(!demo && ['sql','admin'].includes(record.level),'Нет доступа к SQL',403);
         const {sql} = await body(req);
         requireValue(typeof sql === 'string' && sql.trim() && sql.length <= 65000,'Введите SQL-запрос');
         return remote(profile,async db=>rowResult(await db.query(sql,[],201)));
@@ -370,12 +443,15 @@ async function api(req, res, url) {
         if (method === 'GET') {
           const offset = Number(url.searchParams.get('offset') || 0);
           requireValue(Number.isSafeInteger(offset) && offset >= 0 && offset <= 1000000);
-          const result = await remote(profile, db=>tableData(db,schema,table,offset,action==='csv'?501:51));
+          const limit = action==='csv'?501:51;
+          const result = demo ? demoRows(schema,table,offset,limit) : await remote(profile, db=>tableData(db,schema,table,offset,limit));
           requireValue(result,'Таблица недоступна',404);
           if (action === 'csv') {
             const page = rowResult(result,500);
             res.setHeader('Content-Type','text/csv; charset=utf-8');
             res.setHeader('Content-Disposition','attachment; filename="abdbadmin-export.csv"');
+            audit(event,200);
+            event.action=null;
             res.end('\uFEFF' + [page.columns,...page.rows].map(row=>row.map(cell).join(',')).join('\r\n') + '\r\n');
             return;
           }
@@ -390,8 +466,9 @@ async function api(req, res, url) {
           return page;
         }
         if (method === 'POST' && action === 'rows') {
-          requireValue(record.level !== 'view','Нет права изменять строки',403);
+          requireValue(!demo && record.level !== 'view','Нет права изменять строки',403);
           const input = await body(req);
+          if (['insert','update','delete'].includes(input.action)) event.action='row.'+input.action;
           return remote(profile,db=>changeRow(db,schema,table,input));
         }
       }
@@ -406,18 +483,26 @@ createServer(async (req,res) => {
   res.setHeader('Referrer-Policy','no-referrer');
   res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
   res.setHeader('Cache-Control','no-store');
+  const event = {};
+  const lang = req.headers['accept-language']?.split(',')[0]?.trim().toLowerCase().startsWith('ru') ? 'ru' : 'en';
+  const t = message => {
+    const match = /^(.*?)( \([A-Z0-9_]+\))$/.exec(message);
+    return match ? translate(lang,match[1])+match[2] : translate(lang,message);
+  };
   try {
+    requireValue(!localOnly || (/^127\.0\.0\.1(?::[0-9]+)?$/.test(req.headers.host || '') && !Object.keys(req.headers).some(name=>name==='forwarded' || name.startsWith('x-forwarded-'))), 'Локальный режим',403);
     const url = new URL(req.url,'http://localhost');
     if (url.pathname === '/healthz' && req.method === 'GET') {res.end('ok'); return;}
     if (!authorized(req.headers.authorization)) {
       res.setHeader('WWW-Authenticate','Basic realm="AbDbAdmin", charset="UTF-8"');
       res.statusCode=401;
       res.setHeader('Content-Type','text/plain; charset=utf-8');
-      res.end('Требуется вход через HTTP Basic Auth');
+      res.end(t('Требуется вход через HTTP Basic Auth'));
       return;
     }
     if (url.pathname.startsWith('/api/')) {
-      const result = await api(req,res,url);
+      const result = await api(req,res,url,event);
+      audit(event,200);
       if (res.writableEnded) return;
       res.setHeader('Content-Type','application/json; charset=utf-8');
       res.end(JSON.stringify(result));
@@ -430,9 +515,10 @@ createServer(async (req,res) => {
   } catch (error) {
     if (res.writableEnded || res.destroyed) return;
     res.statusCode = error instanceof RequestError ? error.status : 500;
+    audit(event,res.statusCode);
     res.setHeader('Content-Type','application/json; charset=utf-8');
     res.removeHeader('Content-Disposition');
     if (res.statusCode === 500) console.error('Application error',error.code || error.name);
-    res.end(JSON.stringify({error:res.statusCode === 500 ? 'Внутренняя ошибка' : error.message}));
+    res.end(JSON.stringify({error:t(res.statusCode === 500 ? 'Внутренняя ошибка' : error.message)}));
   }
-}).listen(Number(process.env.PORT || 8099),process.env.BIND_HOST || '127.0.0.1',function () { console.log('AbDbAdmin запущен: '+this.address().port); });
+}).listen(Number(process.env.PORT || 8099),process.env.BIND_HOST || '127.0.0.1',function () { console.log('AbDbAdmin listening on '+this.address().port); });

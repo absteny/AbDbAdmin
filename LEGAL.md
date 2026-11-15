@@ -1,51 +1,48 @@
-# Лицензирование и обработка данных
+# Licensing and data handling
 
-## Исходный код, зависимости и контейнер
+## Source, dependencies, and container
 
-- Условия применения и распространения кода AbDbAdmin приведены в [LICENSE](LICENSE).
-  Сохраняйте исходные уведомления об авторском праве и тексты лицензий.
-- Лицензии npm-пакетов закреплённых версий и поставляемого шрифта Inter
-  собраны в [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt). Лицензия Inter
-  также лежит рядом с файлами шрифта. Отдельные компоненты сохраняют свои условия.
-- Dockerfile использует [официальный образ Node.js](https://hub.docker.com/_/node)
-  на базе Debian. Готовый образ включает компоненты Node.js и Debian.
-  Перед публикацией готового образа определите лицензии точного образа и
-  пакетов, сохраните уведомления и выполните применимые требования о
-  предоставлении соответствующих исходников. Публикация исходников AbDbAdmin
-  с Dockerfile и распространение готового образа требуют разных проверок.
-- В MIT есть оговорки об отсутствии гарантий и ограничении ответственности
-  в пределах применимого права. Условия зависят от юрисдикции и способа
-  распространения. Для платной поддержки, хостинга или публичной поставки
-  готовых образов отдельно проверьте договорные и регуляторные требования.
+AbDbAdmin is available under the [MIT license](LICENSE). Keep the copyright
+and license notices when redistributing the software. The MIT warranty and
+liability terms apply subject to applicable law.
 
-## Название и обозначения СУБД
+The license notices for the pinned npm dependencies and bundled Inter font
+are in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt). The Inter license
+also accompanies the font files. These components retain their own terms.
 
-AbDbAdmin — название проекта. Названия PostgreSQL, MySQL и MariaDB
-используются для описания совместимости. Проект не связан с их
-правообладателями и не заявляет об их одобрении. Перед коммерческим запуском
-проверьте AbDbAdmin и сходные названия в классах и странах, где будете
-использовать бренд. Начать можно с [WIPO Global Brand Database](https://www.wipo.int/en/web/global-brand-database/index)
-и [TMview](https://www.tmdn.org/tmview/advancedSearch.html), затем проверить
-национальные реестры соответствующих стран.
+The Dockerfile uses the [official Node.js image](https://hub.docker.com/_/node)
+on Debian. Before distributing a built image, review the exact base image
+and packages, preserve their notices, and fulfill any applicable source
+distribution obligations. Review additional contractual and regulatory
+requirements for hosted or commercial distributions separately.
 
-## Самостоятельное размещение
+## Names and trademarks
 
-Экземпляр хранит логины панели, хеши паролей, сведения о сессиях, права
-пользователей и зашифрованные профили подключений на сервере владельца.
-Панель передаёт запросы заданным операторами серверам БД и показывает ответы
-в браузере. Запрошенные CSV-файлы скачиваются пользователем. Приложение не
-включает телеметрию и не отправляет данные автору проекта. Хостинг, прокси и
-резервное копирование могут обрабатывать данные отдельно.
+AbDbAdmin is the project name. PostgreSQL, MySQL, and MariaDB are mentioned to
+describe compatibility. The project has no affiliation with or endorsement
+from their owners. For commercial use, check the project name and similar
+marks in the countries and product classes where you plan to use it.
+Consult the [WIPO Global Brand Database](https://www.wipo.int/en/web/global-brand-database/index),
+[TMview](https://www.tmdn.org/tmview/advancedSearch.html), and relevant national
+registries.
 
-Оператор экземпляра определяет цели обработки и ограничения доступа,
-проверяет законность подключения к базам, условия хранения и удаления,
-порядок реакции на инциденты и применимые требования к уведомлениям.
-Обязанности по персональным данным зависят от роли оператора и юрисдикции.
-Для обработки под GDPR применимость и меры защиты проверяют, в частности,
-по статье 32. Для обработки в России проверяют применимость 152‑ФЗ и
-связанных требований. Публикация исходного кода сама по себе не заявляет
-соответствие GDPR, 152‑ФЗ или отраслевым стандартам.
+## Self-hosting and personal data
 
-Справочные тексты — [GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj/eng),
-[152‑ФЗ](https://www.consultant.ru/document/cons_doc_LAW_61801/),
-[разъяснение Еврокомиссии об открытом ПО в CRA](https://digital-strategy.ec.europa.eu/en/policies/cra-open-source).
+The instance stores account names, password hashes, session and permission
+metadata, encrypted connection profiles, and an audit log on the operator's
+server. Audit records include available actor names, target identifiers,
+timestamps, actions, and outcomes. The application sends queries to configured
+database servers and presents the results to authorized users. CSV exports
+are downloaded by the user. The built-in demo uses synthetic data.
+
+The application does not send telemetry or database contents to the project
+maintainer. Hosting, reverse proxies, and backup services may handle data
+independently.
+
+Operators determine their lawful access, retention and deletion policies,
+safeguards, and incident response. Their obligations depend on jurisdiction
+and role. Consult applicable laws, including
+[GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj/eng) or
+[Russia's Federal Law No. 152-FZ](https://www.consultant.ru/document/cons_doc_LAW_61801/)
+where relevant. For commercial distribution in the European Union, also
+review the [Cyber Resilience Act guidance](https://digital-strategy.ec.europa.eu/en/policies/cra-open-source).

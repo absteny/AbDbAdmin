@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { get } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { withDatabase } from '../database.mjs';
 
-test('Первый запуск, сессии, права и операции с БД', {timeout:90000}, async t=>{
+test('First run, access control, demo, and audit', {timeout:90000}, async t=>{
   const directory = await mkdtemp(join(tmpdir(),'claydb-test-'));
-  const server = spawn(process.execPath,['server.mjs'],{env:{...process.env,DATA_DIR:directory,PORT:'0',BIND_HOST:'127.0.0.1',COOKIE_SECURE:'0'}});
+  const server = spawn(process.execPath,['server.mjs'],{env:{...process.env,DATA_DIR:directory,PORT:'0',BIND_HOST:'127.0.0.1',COOKIE_SECURE:'0',ABDB_LOCAL_ONLY:'1'}});
   t.after(async ()=>{
     if (server.exitCode==null && server.signalCode==null) {
       const exited = once(server,'exit');
@@ -22,7 +23,7 @@ test('Первый запуск, сессии, права и операции с
     let stdout='';
     server.stdout.on('data',chunk=>{
       stdout+=chunk;
-      const port=/AbDbAdmin запущен: (\d+)/.exec(stdout)?.[1];
+      const port=/AbDbAdmin listening on (\d+)/.exec(stdout)?.[1];
       if (port) resolve(port);
     });
     server.once('error',reject);
@@ -35,7 +36,7 @@ test('Первый запуск, сессии, права и операции с
     });
   }
   function gatewayPassword() {
-    return /Логин: gateway\nПароль: ([A-Za-z0-9_-]{43})/.exec(command('show-access'))?.[1];
+    return /Username: gateway\nPassword: ([A-Za-z0-9_-]{43})/.exec(command('show-access'))?.[1];
   }
   const basic = gatewayPassword();
   assert.ok(basic);
@@ -65,7 +66,19 @@ test('Первый запуск, сессии, права и операции с
   }
   const wrong = await fetch(base,{headers:{Authorization:'Basic '+Buffer.from('gateway:'+'0'.repeat(43)).toString('base64')}});
   assert.equal(wrong.status,401);
-  assert.match(await (await fetch(base,{headers:{Authorization:auth}})).text(),/AbDbAdmin/);
+  assert.match(await (await fetch(base,{headers:{Authorization:auth}})).text(),/<html lang="en">/);
+  const outsideHost = await new Promise((resolve,reject)=>{
+    get(base,{headers:{Authorization:auth,Host:'remote.example'}},response=>{
+      response.resume();
+      resolve(response.statusCode);
+    }).on('error',reject);
+  });
+  assert.equal(outsideHost,403);
+  assert.equal((await fetch(base,{headers:{Authorization:auth,'X-Forwarded-For':'192.0.2.10'}})).status,403);
+  assert.equal((await fetch(base+'/i18n.js',{headers:{Authorization:auth}})).status,200);
+  const unauthenticated = language => fetch(base+'/api/session',{headers:{Authorization:auth,'Accept-Language':language}}).then(res=>res.json());
+  assert.deepEqual(await unauthenticated('en'),{error:'Sign in to the panel'});
+  assert.deepEqual(await unauthenticated('ru'),{error:'Войдите в панель'});
   await request('connections','GET',undefined,'',401);
   await request('login','POST',{name:'admin',password:initial},'',403,false);
   const {cookie:admin} = await request('login','POST',{name:'admin',password:initial});
@@ -76,7 +89,33 @@ test('Первый запуск, сессии, права и операции с
   await request('users','GET',undefined,reader,403);
   assert.deepEqual((await request('connections','GET',undefined,reader)).body,[]);
 
-  await t.test('Интеграция с реальным сервером БД', {skip:!process.env.TEST_DB_ENGINE}, async ()=>{
+  await request('audit','GET',undefined,reader,403);
+  await request('demo','POST',undefined,reader,403);
+  const {body:{id:demoId}} = await request('demo','POST',undefined,admin);
+  assert.equal((await request('demo','POST',undefined,admin)).body.id,demoId);
+  const demo = 'connections/'+demoId;
+  const grant = 'users/'+readerId+'/permissions';
+  await request(demo+'/schema','GET',undefined,reader,404);
+  await request(grant,'PUT',{connection:demoId,level:'edit'},admin,403);
+  await request(grant,'PUT',{connection:demoId,level:'view'},admin);
+  const {body:demoConnections} = await request('connections','GET',undefined,reader);
+  assert.deepEqual(demoConnections.map(item=>[item.id,item.level]),[[demoId,'view']]);
+  const {body:sampleSchema} = await request(demo+'/schema','GET',undefined,reader);
+  assert.equal(sampleSchema.tables.length,4);
+  assert.ok(sampleSchema.relations.some(edge=>edge.join('.')==='store.orders.store.customers'));
+  const orders = demo+'/rows?schema=store&table=orders';
+  assert.deepEqual((await request(orders,'GET',undefined,reader)).body.rows[0],[101,1,'paid']);
+  const {body:customers} = await request(demo+'/rows?schema=store&table=customers','GET',undefined,reader);
+  assert.deepEqual(customers.rows[0],[1,'Northwind Workshop']);
+  const row = {action:'update',key:{id:101},values:{status:'secret-row-marker'}};
+  await request(orders,'POST',row,reader,403);
+  await request(orders,'POST',row,admin,403);
+  await request(demo+'/sql','POST',{sql:'SELECT secret-sql-marker'},admin,403);
+  await request(demo+'/csv?schema=store&table=orders','GET',undefined,reader);
+  await request(demo,'DELETE',undefined,admin);
+  await request(orders,'GET',undefined,reader,404);
+
+  await t.test('Database integration', {skip:!process.env.TEST_DB_ENGINE}, async ()=>{
     const engine = process.env.TEST_DB_ENGINE;
     const pg = engine==='postgres';
     const schema = pg?'public':'clay';
@@ -130,6 +169,18 @@ test('Первый запуск, сессии, права и операции с
   await request('password','POST',{current:initial,password:'replacement-password-123'},admin);
   await assert.rejects(readFile(join(directory,'initial-admin.txt')),{code:'ENOENT'});
   await request('login','POST',{name:'admin',password:initial},'',401);
+  const {body:log} = await request('audit','GET',undefined,admin);
+  assert.ok(log.entries.some(e=>e.action==='login' && e.status===401 && e.actor===null));
+  assert.ok(log.entries.some(e=>e.action==='permission.change' && e.actor==='admin' && e.connection_id===demoId && e.subject_id===readerId && e.status===200));
+  assert.ok(log.entries.some(e=>e.action==='sql.execute' && e.status===403));
+  assert.ok(log.entries.some(e=>e.action==='csv.export' && e.actor==='reader' && e.status===200));
+  assert.ok(log.entries.some(e=>e.action==='row.write' && e.actor==='reader' && e.status===403));
+  for (const secret of ['secret-row-marker','secret-sql-marker',initial,basic,'test-reader-pass']) {
+    assert.equal(JSON.stringify(log).includes(secret),false);
+  }
+  const oldest=log.entries.at(-1).id;
+  const older=(await request('audit?before='+oldest,'GET',undefined,admin)).body;
+  assert.ok(older.entries.every(entry=>entry.id<oldest));
   await request('users/'+readerId,'DELETE',undefined,admin);
   await request('session','GET',undefined,reader,401);
   await request('logout','POST',undefined,admin);
