@@ -201,3 +201,10 @@ dialog::backdrop{background:#163e4866}
   .catalog-shell .sidebar{border-right:0;border-bottom:2px solid #b9c4c6}
   .catalog-shell .table-tree-list{max-height:25dvh}
 }
+
+#request-loader{position:fixed;z-index:30;bottom:1rem;right:1rem;display:flex;align-items:center;gap:.7rem;border:1px solid #b5d9d7;background:#f3fcfb;color:#164651;padding:.65rem .9rem;border-radius:10px;box-shadow:0 5px 20px #16465133;font-size:.85rem;font-weight:650;pointer-events:none}
+#request-loader[hidden]{display:none}
+.loader-spinner{width:1.1rem;height:1.1rem;flex:none;border:2px solid #badad8;border-top-color:#10788b;border-right-color:#239579;border-radius:50%;animation:abdb-spin .75s linear infinite}
+@keyframes abdb-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.loader-spinner{animation:none}}
+.catalog-bulk select{width:auto;padding:.3rem .5rem;border-radius:4px;background:white}

@@ -53,23 +53,62 @@ function toast(message) {
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(()=>{notice.hidden=true;},4500);
 }
+const requests=new Map();
+const requestLoader=document.querySelector('#request-loader');
+const requestLabel=document.querySelector('#request-loader-label');
+let requestTimer;
+function requestTitle(path,method) {
+  const endpoint=path.split('?')[0].split('/').at(-1);
+  if (endpoint==='session') return 'Проверяем сеанс…';
+  if (endpoint==='login') return 'Входим в панель…';
+  if (endpoint==='schema' || endpoint==='structure-editor' && method==='GET') return 'Загрузка структуры…';
+  if (endpoint==='rows' && method==='GET') return 'Загружаем строки…';
+  if (endpoint==='sql' || endpoint==='sql-script') return 'Обрабатываем SQL…';
+  if (endpoint==='connection-test') return 'Проверяем подключение…';
+  if (method!=='GET') return 'Выполняем запрос…';
+  return 'Загрузка…';
+}
+function startRequest(path,method) {
+  const ticket=Symbol();
+  requests.set(ticket,requestTitle(path,method));
+  const show=()=>{
+    if (!requests.size) return;
+    requestLabel.textContent=t([...requests.values()].at(-1));
+    requestLoader.hidden=false;
+  };
+  if (requestLoader.hidden) {
+    if (!requestTimer) requestTimer=setTimeout(()=>{requestTimer=undefined;show();},140);
+  } else show();
+  return ()=>{
+    requests.delete(ticket);
+    if (!requests.size) {
+      clearTimeout(requestTimer);
+      requestTimer=undefined;
+      requestLoader.hidden=true;
+    } else if (!requestLoader.hidden) show();
+  };
+}
+
 async function api(path, method='GET', payload) {
-  const response = await fetch('/api/'+path,{
-    method,
-    headers:{'X-AbDbAdmin':'1','Accept-Language':language,...(payload === undefined ? {} : {'Content-Type':'application/json'})},
-    body:payload === undefined ? undefined : JSON.stringify(payload),
-  });
-  const value = await response.json();
-  if (!response.ok) {
-    if (response.status === 401 && !['login','session'].includes(path)) {
-      tableViews.clear();scriptDraft=null;
-      state.user = null;
-      if (dialog.open) dialog.close();
-      login();
+  const finish=startRequest(path,method);
+  try {
+    const response = await fetch('/api/'+path,{
+      method,
+      headers:{'X-AbDbAdmin':'1','Accept-Language':language,...(payload === undefined ? {} : {'Content-Type':'application/json'})},
+      body:payload === undefined ? undefined : JSON.stringify(payload),
+    });
+    const value = await response.json();
+    if (!response.ok) {
+      if (response.status === 401 && !['login','session'].includes(path)) {
+        tableViews.clear();scriptDraft=null;
+        state.user = null;
+        if (dialog.open) dialog.close();
+        login();
+      }
+      throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer});
     }
-    throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer});
-  }
-  return value;
+    return value;
+  } finally {finish();}
 }
 const route = tail=>`connections/${state.connection.id}/${tail}`;
 const tableViews = new Map();
@@ -948,6 +987,63 @@ function databaseStructure(target) {
       render();
     }));
   }
+  const bulkChoices=[
+    ['CHECK',t('Проверить')],['ANALYZE',t('Обновить статистику')],['OPTIMIZE',t('Оптимизировать')],
+    ['truncate-table',t('Очистить')],['drop-table',t('Удалить')],
+  ];
+  const bulkSelect=select('bulk',[['',t('С выбранными')],...bulkChoices],'');
+  const bulkRun=button(t('Продолжить'),click(async ()=>{
+    const operation=bulkSelect.value;
+    const selected=state.tables.filter(table=>checked.has(tableKey(table)) && table[2]==='BASE TABLE');
+    if (!operation || !selected.length) return;
+    if (selected.length>20) throw new Error(t('Выберите не более 20 таблиц.'));
+    const destructive=operation==='truncate-table' || operation==='drop-table';
+    const path=route(destructive?'structure-editor':'maintenance');
+    const title=bulkChoices.find(([key])=>key===operation)[1];
+    const result=div('stack');
+    const review=form([
+      e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' · '+title),
+      e('p',{},t('Вы точно хотите внести эти изменения?')),
+      e('p',{},selected.map(table=>table[1]).join(', ')),
+      destructive?e('p',{},t('Действия выполняются по очереди. При ошибке предыдущие изменения могут сохраниться.')):null,
+      result,
+    ],t('Подтвердить'),async (_values,element)=>{
+      const reportRows=[];
+      result.replaceChildren(e('p',{},t('Выполняем запрос…')));
+      for (const [,table] of selected) {
+        if (!element.isConnected || !dialog.open) return;
+        try {
+          if (destructive) {
+            const input={table,operation};
+            const preview=await api(path,'POST',{...input,preview:true});
+            if (!element.isConnected || !dialog.open) return;
+            await api(path,'POST',{...input,confirmation:preview.confirmation});
+            reportRows.push([table,t('Готово')]);
+          } else {
+            const response=await api(path,'POST',{table,operation});
+            for (const row of response.rows) reportRows.push([table,[row[2],row[3]].filter(Boolean).join(' · ')]);
+          }
+        } catch (error) {
+          reportRows.push([table,error.message]);
+          break;
+        }
+      }
+      if (!element.isConnected || !dialog.open) return;
+      result.replaceChildren(resultTable({columns:[t('Таблица'),t('Результат')],rows:reportRows}),
+        button(t('Закрыть'),()=>{
+          dialog.close();state.schema=null;render();
+        }));
+      // A completed batch is never resubmitted from this confirmation.
+      element.querySelector('[type=submit]').remove();
+    });
+    openDialog(t('С выбранными'),review);
+  }));
+  bulkSelect.addEventListener('change',updateBulk);
+  function updateBulk() {
+    const selected=state.tables.some(table=>table[2]==='BASE TABLE' && checked.has(tableKey(table)));
+    bulkSelect.disabled=!selected;
+    bulkRun.disabled=!selected || !bulkSelect.value;
+  }
   function update() {
     const needle=search.value.trim().toLowerCase();
     const visible=state.tables.filter(table=> {
@@ -994,6 +1090,7 @@ function databaseStructure(target) {
             size==null?'—':bytes(size),Number(free)>0?bytes(free):'—']:[schema,type]).map(value=>e('td',{class:'catalog-meta'},value)));
       }))));
     selectionStatus.textContent=t('Выбрано таблиц: {count}',{count:checked.size});
+    updateBulk();
     if (!visible.length) results.append(e('p',{},t('Подходящих таблиц нет.')));
   }
   search.addEventListener('input',update);
@@ -1004,7 +1101,7 @@ function databaseStructure(target) {
       div('row',label(t('Содержит слово'),search),
         e('label',{class:'check'},favoriteOnly,t('Только избранные')),
         e('label',{class:'check'},onlySelected,t('Только выбранные')))),
-    results,div('row spread catalog-summary',selectionStatus,
+    results,div('row spread catalog-summary',selectionStatus,canEdit?div('row catalog-bulk',bulkSelect,bulkRun):null,
       button(t('Обновить структуру'),()=>{state.schema=null;render();}))));
   update();
 }

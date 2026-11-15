@@ -1,4 +1,16 @@
 const english = {
+  "Проверяем сеанс…": "Checking your session…",
+  "Входим в панель…": "Signing in…",
+  "Загружаем строки…": "Loading table rows…",
+  "Обрабатываем SQL…": "Processing SQL…",
+  "Проверяем подключение…": "Testing the connection…",
+  "Выполняем запрос…": "Running the operation…",
+  "С выбранными": "With selected",
+  "Продолжить": "Continue",
+  "Выберите не более 20 таблиц.": "Select no more than 20 tables.",
+  "Действия выполняются по очереди. При ошибке предыдущие изменения могут сохраниться.": "Operations run in order. A failure can leave earlier changes applied.",
+  "Готово": "Done"
+,
   "Новая таблица": "New table",
   "Фрагментация": "Overhead",
   "Выбрать видимые таблицы": "Select visible tables",
