@@ -243,8 +243,20 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
           assert.match(observed.trust.fingerprint,/^SHA256:[A-Za-z0-9+/]{43}$/);
           await request('connections','POST',{...newcomer,sshApproval:'forged'},admin,409);
           assert.equal(authAttempts,before);
-          await request('connection-test','POST',{...newcomer,sshApproval:observed.trust.approval},admin);
-          const id=(await request('connections','POST',{...newcomer,sshApproval:observed.trust.approval},admin)).body.id;
+          if (process.env.TEST_DB_NO_TLS==='1') {
+            const tlsFailure=await request('connection-test','POST',{...newcomer,tls:true,sshApproval:observed.trust.approval},admin,502);
+            assert.equal(tlsFailure.body.code,'HANDSHAKE_NO_SSL_SUPPORT');
+            assert.equal(tlsFailure.body.canUseSshEncryption,true);
+            const direct=await request('connection-test','POST',{...newcomer,ssh:null,tls:true},admin,502);
+            assert.equal(direct.body.canUseSshEncryption,undefined);
+          } else await request('connection-test','POST',{...newcomer,sshApproval:observed.trust.approval},admin);
+          await request('connection-test','POST',newcomer,admin);
+          const {tls,...loopbackProfile}=newcomer;
+          const id=(await request('connections','POST',{...loopbackProfile,sshOnlyEncryption:true},admin)).body.id;
+          const savedLoopback=(await request('connections/'+id+'/settings','GET',undefined,admin)).body;
+          assert.equal(savedLoopback.tls,false);
+          assert.equal(savedLoopback.sshOnlyEncryption,true);
+          await request('connection-test','POST',{...loopbackProfile,host:'db.example.net',sshOnlyEncryption:true},admin,400);
           await request('connections/'+id+'/sql','POST',{sql:'SELECT 1'},admin);
           await request('connections/'+id,'DELETE',undefined,admin);
         } finally {
@@ -267,6 +279,11 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
           assert.match(wrong.body.error,/passphrase/i);
           const noPass=await request('connection-test','POST',{...ppkProfile,ssh:{...ppkProfile.ssh,passphrase:''}},admin,502);
           assert.match(noPass.body.error,/encrypted/i);
+          const empty=join(directory,'ssh-fixture-empty'), plain=join(directory,'ssh-fixture-plain.ppk');
+          await writeFile(empty,'\n',{mode:0o600});
+          execFileSync('puttygen',[source,'-O','private','-o',plain,'--old-passphrase',pass,'--new-passphrase',empty,
+            '--ppk-param','version=3'],{stdio:'pipe'});
+          await request('connection-test','POST',{...tunneled,ssh:{...ssh,privateKey:await readFile(plain,'utf8'),passphrase:''}},admin);
         }
         const publicOnly=await request('connection-test','POST',{...tunneled,ssh:{...ssh,privateKey:keypair.public}},admin,502);
         assert.match(publicOnly.body.error,/public ssh key/i);

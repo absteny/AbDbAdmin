@@ -134,11 +134,17 @@ or a trusted SSH-server console. If it matches, choose **Yes, trust this key**.
 AbDbAdmin begins database authentication only after you approve the key and
 the server presents the same fingerprint again.
 
-Saving the connection stores the approved fingerprint and checks it on
-later connections. A changed server key blocks the connection. After an
-authorized rotation, verify the new fingerprint before creating a
-replacement profile. Operators can optionally preconfigure trusted host
-keys in `ABDB_SSH_HOST_KEYS`. SSH private keys and passphrases are stored
+Approving the key remembers it for that SSH host and port, even if the
+database login fails. Later connections reuse it and reject unexpected key
+changes. After an authorized rotation, verify the new fingerprint and
+configure it in `ABDB_SSH_HOST_KEYS`, then test and save the connection.
+
+If MySQL or MariaDB does not support TLS and is on the SSH server's
+loopback address, choose **Retry over SSH without database TLS** after
+the test reports that error. This keeps the SSH tunnel encrypted and
+uses no separate TLS session between the SSH server and the database.
+Direct connections and database addresses on other machines do not offer
+this retry. SSH private keys and passphrases are stored
 encrypted in the saved profile.
 
 ### Browse a database

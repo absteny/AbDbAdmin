@@ -1,4 +1,9 @@
 const english = {
+  "База данных не поддерживает TLS. Проверьте настройки шифрования на сервере БД.": "The database does not support TLS. Check encryption settings on the database server.",
+  "SSH шифрует соединение до SSH-сервера. От него до локальной базы TLS не используется.": "SSH encrypts the connection to the SSH server. TLS is not used from there to the local database.",
+  "Повторить через SSH без TLS к базе": "Retry over SSH without database TLS",
+  "Шифрование только через SSH доступно для локального адреса базы.": "SSH-only encryption requires a loopback database address.",
+  "Ключ SSH-сервера отличается от ранее подтверждённого.": "The SSH server key differs from the previously confirmed key.",
   "Загружен публичный SSH-ключ. Выберите файл приватного ключа PuTTY или OpenSSH.": "This is a public SSH key. Select a private PuTTY or OpenSSH key.",
   "Приватный SSH-ключ зашифрован. Введите его парольную фразу.": "The private SSH key is encrypted. Enter its passphrase.",
   "Парольная фраза SSH-ключа не подошла. Проверьте её и повторите подключение.": "The SSH key passphrase was incorrect. Check it and try again.",

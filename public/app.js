@@ -142,7 +142,7 @@ async function api(path, method='GET', payload, {quiet=false,signal}={}) {
         if (dialog.open) dialog.close();
         login();
       }
-      throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer,stage:value.stage,code:value.code,endpoint:value.endpoint,trust:value.trust});
+      throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer,stage:value.stage,code:value.code,endpoint:value.endpoint,trust:value.trust,canUseSshEncryption:value.canUseSshEncryption});
     }
     return value;
   } finally {finish();}
@@ -441,6 +441,7 @@ function editConnection(config={}, id=null) {
     if (kind!=='pending') result.scrollIntoView?.({block:'nearest'});
   }
   let sshApproval;
+  let sshOnlyEncryption=config.sshOnlyEncryption===true;
   function showFailure(error,submitter) {
     if (error.code==='SSH_HOST_KEY_CONFIRMATION' && error.trust) {
       showResult('pending','Подтвердите ключ SSH-сервера',
@@ -454,7 +455,13 @@ function editConnection(config={}, id=null) {
       return;
     }
     const title=error.stage==='ssh'?'Ошибка SSH':error.stage==='database'?'Ошибка подключения к базе':'Не удалось проверить подключение';
-    showResult('error',title,e('p',{},error.message));
+    const retry=error.code==='HANDSHAKE_NO_SSL_SUPPORT' && error.canUseSshEncryption?div('stack',
+      e('p',{},t('SSH шифрует соединение до SSH-сервера. От него до локальной базы TLS не используется.')),
+      button(t('Повторить через SSH без TLS к базе'),()=>{
+        sshOnlyEncryption=true;
+        content.requestSubmit(submitter ?? undefined);
+      },'primary')):null;
+    showResult('error',title,e('p',{},error.message),retry);
     toast(t(title),'error');
   }
   const content = form(div('fields',
@@ -480,6 +487,7 @@ function editConnection(config={}, id=null) {
     try {
       data.port=Number(data.port);
       data.ssh=null;
+      data.sshOnlyEncryption=!sshFields.disabled && sshOnlyEncryption;
       if (sshApproval) data.sshApproval=sshApproval;
       if (!sshFields.disabled) {
         await keyLoad;
@@ -518,8 +526,9 @@ function editConnection(config={}, id=null) {
   content.lastElementChild.before(result);
   content.addEventListener('input',()=>{result.hidden=true;});
   for (const control of [sshHost,sshPort]) control.addEventListener('input',()=>{sshApproval=undefined;});
+  for (const control of [targetHost,port,sshHost,sshPort,engine]) control.addEventListener('input',()=>{sshOnlyEncryption=false;});
   content.addEventListener('invalid',()=>showResult('error','Проверьте выделенные поля'),true);
-  for (const mode of modes.children) mode.addEventListener('click',()=>{result.hidden=true;sshApproval=undefined;});
+  for (const mode of modes.children) mode.addEventListener('click',()=>{result.hidden=true;sshApproval=undefined;sshOnlyEncryption=false;});
   openDialog(id?t('Настройки подключения'):t('Новое подключение'),content);
 }
 async function users(target,stamp) {

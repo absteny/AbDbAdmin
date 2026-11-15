@@ -29,6 +29,7 @@ database.exec(`
     payload TEXT NOT NULL,
     undo_state TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS trusted_ssh_hosts (endpoint TEXT PRIMARY KEY, fingerprint TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, admin INTEGER NOT NULL
@@ -251,7 +252,8 @@ function sshConfiguration(input,previous) {
     typeof passphrase==='string' && passphrase.length<=4096,'Проверьте настройки SSH');
   const sameEndpoint=previous?.host.toLowerCase()===host.toLowerCase() && previous.port===port;
   const endpoint=(host.includes(':')?'['+host+']':host).toLowerCase()+':'+port;
-  const fingerprint=sshHostKeys.get(endpoint) ?? (sameEndpoint?previous.fingerprint:null);
+  const fingerprint=sshHostKeys.get(endpoint) ?? (sameEndpoint?previous.fingerprint:null) ??
+    database.prepare('SELECT fingerprint FROM trusted_ssh_hosts WHERE endpoint=?').get(endpoint)?.fingerprint;
   return {host,port,user,fingerprint,privateKey:privateKey.trim(),passphrase};
 }
 
@@ -264,7 +266,10 @@ async function confirmSshHost(profile,approval,user) {
     let claim;
     try {claim=reveal(approval);} catch {}
     if (claim?.purpose==='ssh-first-use' && claim.user===user.id && claim.endpoint===endpoint && claim.expires>Date.now()) {
-      ssh.fingerprint=claim.fingerprint;
+      database.prepare('INSERT OR IGNORE INTO trusted_ssh_hosts VALUES (?,?)').run(endpoint,claim.fingerprint);
+      const trusted=database.prepare('SELECT fingerprint FROM trusted_ssh_hosts WHERE endpoint=?').get(endpoint).fingerprint;
+      if (trusted!==claim.fingerprint) throw Object.assign(new RequestError(409,'Ключ SSH-сервера отличается от ранее подтверждённого.'),{stage:'ssh'});
+      ssh.fingerprint=trusted;
       return;
     }
   }
@@ -283,17 +288,26 @@ async function confirmSshHost(profile,approval,user) {
   });
 }
 
+const isLoopbackDatabase=host=>['127.0.0.1','::1','localhost'].includes(host.toLowerCase());
+
 function configuration(input, previous) {
   const {name, engine, host, port, user, database, ca = ''} = input;
-  const tls=input.tls===undefined?previous?.tls ?? true:input.tls;
   const password = typeof input.password === 'string' ? input.password : previous?.password;
-  requireValue(['postgres','mysql','mariadb'].includes(engine) && typeof tls === 'boolean');
+  requireValue(['postgres','mysql','mariadb'].includes(engine));
   requireValue([name,host,user,database].every(value => typeof value === 'string' && value.trim() && value.length <= 255));
   requireValue(!/[\s/\\\x00]/.test(host) && Number.isInteger(port) && port > 0 && port <= 65535);
   requireValue(typeof password === 'string' && password.length <= 4096 && typeof ca === 'string' && ca.length <= 32768);
   requireValue(engine!=='postgres' || !input.ssh,'SSH доступен для MySQL и MariaDB');
   const ssh=engine==='postgres'?null:sshConfiguration(input.ssh,previous?.ssh);
-  return {name:name.trim(), engine, host, port, user, database, password, tls, ca,...(ssh?{ssh}:{}), production:true};
+  const canUseSshEncryption=Boolean(ssh && isLoopbackDatabase(host));
+  requireValue(input.sshOnlyEncryption!==true || canUseSshEncryption,'Шифрование только через SSH доступно для локального адреса базы.');
+  const sshOnlyEncryption=canUseSshEncryption && (input.sshOnlyEncryption===true ||
+    input.sshOnlyEncryption===undefined && input.tls===undefined && previous?.sshOnlyEncryption===true &&
+    previous.host===host && previous.port===port && previous.ssh?.host===ssh.host && previous.ssh?.port===ssh.port);
+  const tls=sshOnlyEncryption?false:input.tls===undefined?previous?.sshOnlyEncryption?true:previous?.tls ?? true:input.tls;
+  requireValue(typeof tls==='boolean');
+  return {name:name.trim(),engine,host,port,user,database,password,tls,ca,...(ssh?{ssh}:{}),
+    ...(sshOnlyEncryption?{sshOnlyEncryption:true}:{}),production:true};
 }
 function access(user, id) {
   const record = user.admin
@@ -332,6 +346,7 @@ async function remote(profile, fn, diagnosing=false, options) {
   catch (error) {
     if (error instanceof RequestError) throw error;
     const messages = {
+      HANDSHAKE_NO_SSL_SUPPORT:'База данных не поддерживает TLS. Проверьте настройки шифрования на сервере БД.',
       SSH_PUBLIC_KEY_ONLY:'Загружен публичный SSH-ключ. Выберите файл приватного ключа PuTTY или OpenSSH.',
       SSH_PASSPHRASE_REQUIRED:'Приватный SSH-ключ зашифрован. Введите его парольную фразу.',
       SSH_PASSPHRASE_WRONG:'Парольная фраза SSH-ключа не подошла. Проверьте её и повторите подключение.',
@@ -366,6 +381,10 @@ async function remote(profile, fn, diagnosing=false, options) {
     const code = typeof error.code === 'string' && /^[A-Z0-9_]{1,60}$/.test(error.code) ? ' ('+error.code+')' : '';
     const message = Object.hasOwn(messages,error.code) ? messages[error.code] : 'Сервер БД не выполнил запрос';
     const failure=new RequestError(502,message+code);
+    if (diagnosing && error.code==='HANDSHAKE_NO_SSL_SUPPORT') {
+      failure.resultCode=error.code;
+      failure.canUseSshEncryption=Boolean(profile.ssh && isLoopbackDatabase(profile.host));
+    }
     if (diagnosing) failure.stage=typeof error.code==='string' && error.code.startsWith('SSH_')?'ssh':'database';
     if (diagnosing && ['ER_ACCESS_DENIED_ERROR','ER_HOST_NOT_PRIVILEGED'].includes(error.code)) {
       const reported=error.sqlMessage || error.message;
@@ -1124,6 +1143,7 @@ createServer(async (req,res) => {
       ...(error.resultCode?{code:error.resultCode}:{}),
       ...(error.endpoint?{endpoint:error.endpoint}:{}),
       ...(error.trust?{trust:error.trust}:{}),
+      ...(error.canUseSshEncryption?{canUseSshEncryption:true}:{}),
     } : {})}));
   }
 }).listen(Number(process.env.PORT || 8099),process.env.BIND_HOST || '127.0.0.1',function () { console.log('AbDbAdmin listening on '+this.address().port); });
