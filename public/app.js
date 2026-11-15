@@ -645,6 +645,10 @@ async function auditView(target,stamp,before=null) {
     openDialog(title,div('stack audit-detail',
       e('h3',{},t('SQL запроса')),statements(info.statements),
       info.truncated?e('small',{},t('В журнале сохранена часть запроса')):null,
+      e('h3',{},t('Данные до и после')),
+      info.changes?.length?e('pre',{class:'schema-sql audit-snapshots'},JSON.stringify(info.changes,null,2)):
+        e('small',{},t('Для этого запроса снимки строк недоступны.')),
+      info.changesOmitted?e('small',{},t('Пропущено снимков из-за размера: {count}',{count:info.changesOmitted})):null,
       div('row',apply),status?e('small',{},t(status)):null,
       info.rollback.length?rollback:null));
   }
@@ -1269,10 +1273,15 @@ function databaseStructure(target) {
   const tableKey=([schema,name])=>JSON.stringify([schema,name]);
   const bytes=value=>{
     const n=Number(value);
+    if (n>=1073741824) return number.format(Math.round(n/107374182.4)/10)+' GiB';
     if (n>=1048576) return number.format(Math.round(n/104857.6)/10)+' MiB';
     if (n>=1024) return number.format(Math.round(n/102.4)/10)+' KiB';
     return number.format(n)+' B';
   };
+
+  const measuredSizes=state.tables.filter(table=>table[6]!=null && !table[8]).map(table=>Number(table[6]));
+  const combinedSize=e('strong',{},t('Размер всех таблиц')+' · '+
+    (measuredSizes.length?bytes(measuredSizes.reduce((total,size)=>total+size,0)):'—'));
 
   const bulkChoices=[
     ['CHECK',t('Проверить')],['ANALYZE',t('Обновить статистику')],['OPTIMIZE',t('Оптимизировать')],
@@ -1348,7 +1357,7 @@ function databaseStructure(target) {
       }
       update();
     });
-    const headers=[t('Таблица'),...(mysql?[t('Строки'),t('Тип'),t('Сравнение'),t('Размер'),t('Фрагментация')]:[t('Схема'),t('Тип')])];
+    const headers=[t('Таблица'),...(mysql?[t('Строки'),t('Тип'),t('Сравнение'),t('Общий размер'),t('Фрагментация')]:[t('Схема'),t('Тип'),t('Общий размер')])];
     results.replaceChildren(e('table',{class:'structure-grid'},
       e('thead',{},e('tr',{},e('th',{scope:'col',class:'catalog-choice'},selectAll),
         headers.map(title=>e('th',{scope:'col'},title)))),
@@ -1361,7 +1370,7 @@ function databaseStructure(target) {
           e('td',{class:'catalog-choice'},selected),
           e('td',{class:'catalog-name'},button(name,()=>openWorkspaceTable(table),'table-link',{title:schema+'.'+name})),
           ...(mysql?[rows==null?'—':number.format(Number(rows)),engine ?? t('Представление БД'),collation ?? '—',
-            size==null?'—':bytes(size),Number(free)>0?bytes(free):'—']:[schema,type]).map(value=>e('td',{class:'catalog-meta'},value)));
+            size==null?'—':bytes(size),Number(free)>0?bytes(free):'—']:[schema,type,size==null?'—':bytes(size)]).map(value=>e('td',{class:'catalog-meta'},value)));
       }))));
     selectionStatus.textContent=t('Выбрано таблиц: {count}',{count:checked.size});
     updateBulk();
@@ -1373,7 +1382,7 @@ function databaseStructure(target) {
     e('fieldset',{class:'catalog-filter'},e('legend',{},t('Фильтры')),
       div('row',label(t('Содержит слово'),search),
         e('label',{class:'check'},onlySelected,t('Только выбранные')))),
-    results,div('row spread catalog-summary',selectionStatus,canEdit?div('row catalog-bulk',bulkSelect,bulkRun):null,
+    results,div('row spread catalog-summary',div('row',selectionStatus,combinedSize),canEdit?div('row catalog-bulk',bulkSelect,bulkRun):null,
       button(t('Обновить структуру'),()=>{state.schema=null;render();}))));
   update();
   const footer=target.querySelector('.catalog-summary');

@@ -64,7 +64,9 @@ function recordAudit(ctx,status) {
   if (ctx.sql?.length) {
     const undo=status<400 && ctx.undo?.length===ctx.sql.length && !ctx.sqlTruncated &&
       Buffer.byteLength(JSON.stringify(ctx.undo))<=65536?ctx.undo:null;
-    writeAuditSql.run(id,protect({statements:ctx.sql,truncated:!!ctx.sqlTruncated,undo}),undo?'ready':'unavailable');
+    const changes=status<400?ctx.changes ?? []:[];
+    writeAuditSql.run(id,protect({statements:ctx.sql,truncated:!!ctx.sqlTruncated,undo,changes,
+      changesOmitted:status<400?ctx.changesOmitted ?? 0:0}),undo?'ready':'unavailable');
     trimAuditSql.run();
   }
   if (id%100===0) trimAudit.run(id-10000);
@@ -489,12 +491,39 @@ function buildUndo(db,schema,table,metadata,keys,names,entries,current,after,rec
     parameters:[...params,...primary],expected:rowToken(record,schema,table,after),restored:rowToken(record,schema,table,current)};
 }
 
+function rememberChange(event,schema,table,names,before,after) {
+  if (!event) return;
+  if ([before,after].some(row=>row?.some(value=>Buffer.isBuffer(value)?value.length>16384:
+    typeof value==='string' && value.length>65536))) {
+    event.changesOmitted=(event.changesOmitted ?? 0)+1;
+    return;
+  }
+  const record=row=>row===null?null:Object.fromEntries(names.map((name,index)=>[name,row[index]]));
+  const change={schema,table,before:record(before),after:record(after)};
+  const size=Buffer.byteLength(JSON.stringify(change));
+  if ((event.changeBytes ?? 0)+size>65536) {
+    event.changesOmitted=(event.changesOmitted ?? 0)+1;
+    return;
+  }
+  event.changeBytes=(event.changeBytes ?? 0)+size;
+  (event.changes ??= []).push(change);
+}
+
+async function insertedRow(db,target,result,keys,values) {
+  if (db.pg) return result;
+  if (!keys.length || result.affected!==1) return;
+  const primary=keys.map(name=>values[name]);
+  if (keys.length===1 && result.insertId && result.insertId!=='0') primary[0]=result.insertId;
+  if (primary.some(value=>value==null)) return;
+  return db.query('SELECT * FROM '+target+' WHERE '+keys.map(name=>identifier(false,name)+'=?').join(' AND '),primary,1);
+}
+
 async function changeRow(db, schema, table, input, record, batchFields, event, batchMetadata) {
   const fields = batchFields ?? await columns(db,schema,table);
   requireValue(fields.length, 'Таблица недоступна', 404);
   const tableType = batchFields ? null : await db.query(
     db.pg ? 'SELECT table_type FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2'
-      : 'SELECT table_type FROM information_schema.tables WHERE table_schema=? AND table_name=?', [schema,table]);
+      : 'SELECT table_type,engine FROM information_schema.tables WHERE table_schema=? AND table_name=?', [schema,table]);
   requireValue(batchFields || tableType.rows[0]?.[0] === 'BASE TABLE','Операции со строками доступны для обычных таблиц',403);
   const keys = fields.filter(field => field[3]).map(field => field[0]);
   const names = fields.map(field => field[0]);
@@ -521,22 +550,43 @@ async function changeRow(db, schema, table, input, record, batchFields, event, b
       'UPDATE '+target+' SET '+entries.map(([name,value])=>quote(name)+'='+bind(value)).join(', ');
     sql = start + ' WHERE ' + keys.map(name=>quote(name)+'='+bind(input.key[name])).join(' AND ');
   }
+  const transactional=Boolean(batchFields || db.pg || /^innodb$/i.test(tableType.rows[0]?.[1]));
+  const capture=Boolean(event && transactional);
+  if (op==='insert') {
+    if (capture && db.pg) sql+=' RETURNING *';
+    rememberSql(event,sql,args);
+    const insert=async ()=>{
+      const result=await db.query(sql,args,1);
+      if (capture) {
+        const captured=await insertedRow(db,target,result,keys,values);
+        if (captured?.rows.length) rememberChange(event,schema,table,captured.columns,null,captured.rows[0]);
+      }
+      return {affected:result.affected};
+    };
+    return capture && !batchFields?db.transaction(insert):insert();
+  }
   rememberSql(event,sql,args);
-  if (op==='insert' || input.snapshot===undefined) return {affected:(await db.query(sql,args)).affected};
-  requireValue(typeof input.snapshot==='string' && /^[a-f0-9]{64}$/.test(input.snapshot));
+  if (!capture && input.snapshot===undefined) return {affected:(await db.query(sql,args)).affected};
+  if (input.snapshot!==undefined) requireValue(typeof input.snapshot==='string' && /^[a-f0-9]{64}$/.test(input.snapshot));
   const condition=keys.map((name,index)=>quote(name)+'='+(db.pg?'$'+(index+1):'?')).join(' AND ');
+  const read=args=>db.query('SELECT * FROM '+target+' WHERE '+condition+' FOR UPDATE',args,1);
   const write=async ()=>{
-    const current=await db.query('SELECT * FROM '+target+' WHERE '+condition+' FOR UPDATE',keys.map(name=>input.key[name]),1);
-    requireValue(current.rows.length && rowToken(record,schema,table,current.rows[0])===input.snapshot,
+    const before=await read(keys.map(name=>input.key[name]));
+    const current=before.rows[0];
+    if (input.snapshot!==undefined) requireValue(current && rowToken(record,schema,table,current)===input.snapshot,
       'Строка изменилась. Обновите таблицу перед повтором.',409);
     let metadata=null;
-    if (op==='update' && event) metadata=batchFields?batchMetadata:await undoMetadata(db,schema,table).catch(()=>null);
+    if (op==='update' && input.snapshot!==undefined && capture) metadata=batchFields?batchMetadata:await undoMetadata(db,schema,table).catch(()=>null);
     const result=await db.query(sql,args);
-    if (metadata?.length && result.affected===1 && entries.every(([name])=>!keys.includes(name))) {
-      const after=await db.query('SELECT * FROM '+target+' WHERE '+condition,keys.map(name=>input.key[name]),1);
-      if (after.rows.length) {
-        const undo=buildUndo(db,schema,table,metadata,keys,names,entries,current.rows[0],after.rows[0],record);
-        if (undo && Buffer.byteLength(JSON.stringify(undo))<=16384) (event.undo ??= []).push(undo);
+    if (capture && current && result.affected===1) {
+      if (op==='delete') rememberChange(event,schema,table,before.columns,current,null);
+      else {
+        const after=(await read(keys.map(name=>Object.hasOwn(values,name)?values[name]:input.key[name]))).rows[0];
+        if (after) {
+          rememberChange(event,schema,table,before.columns,current,after);
+          const undo=metadata?.length && names.length===before.columns.length && names.every((name,index)=>name===before.columns[index])?buildUndo(db,schema,table,metadata,keys,names,entries,current,after,record):null;
+          if (undo && Buffer.byteLength(JSON.stringify(undo))<=16384) (event.undo ??= []).push(undo);
+        }
       }
     }
     return {affected:result.affected};
@@ -590,8 +640,11 @@ async function changeSelectedRows(db,schema,table,input,record,event) {
         'Строка изменилась. Обновите таблицу перед повтором.',409);
       const insert=copyNames?' ('+copyNames+') SELECT '+copyNames+' FROM '+target+' WHERE '+condition:
         db.pg?' DEFAULT VALUES':' () VALUES ()';
-      rememberSql(event,'INSERT INTO '+target+insert,copyNames?args:[]);
-      const result=await db.query('INSERT INTO '+target+insert,copyNames?args:[]);
+      const sql='INSERT INTO '+target+insert+(db.pg?' RETURNING *':'');
+      rememberSql(event,sql,copyNames?args:[]);
+      const result=await db.query(sql,copyNames?args:[],1);
+      const captured=await insertedRow(db,target,result,keys.map(([name])=>name),{});
+      if (captured?.rows.length) rememberChange(event,schema,table,captured.columns,null,captured.rows[0]);
       affected+=result.affected ?? 0;
     }
     return {affected};
@@ -660,8 +713,8 @@ async function api(req, res, url, event) {
     const item=database.prepare(`SELECT a.connection_id,s.payload,s.undo_state FROM audit_sql s
       JOIN audit a ON a.id=s.audit_id WHERE s.audit_id=?`).get(auditId);
     requireValue(item,'Запись журнала недоступна',404);
-    const {statements,truncated,undo}=reveal(item.payload);
-    if (!action && method==='GET') return {statements,truncated,undoState:item.undo_state,
+    const {statements,truncated,undo,changes=[],changesOmitted=0}=reveal(item.payload);
+    if (!action && method==='GET') return {statements,truncated,changes,changesOmitted,undoState:item.undo_state,
       rollback:undo?.slice().reverse().map(({sql,parameters})=>({sql,parameters})) ?? []};
     if (action==='undo' && method==='POST') {
       const {confirmed}=await body(req);
@@ -682,14 +735,16 @@ async function api(req, res, url, event) {
             const target=quote(schema)+'.'+quote(table);
             if (!checks.has(target)) {
               await db.query('SELECT 1 FROM '+target+' WHERE 1=0');
-              checks.set(target,digest(JSON.stringify(await undoMetadata(db,schema,table))));
+              const definition=await undoMetadata(db,schema,table);
+              checks.set(target,digest(JSON.stringify(definition)));
             }
             if (checks.get(target)!==entry.definition) {
               safeRetry=true;
               throw new RequestError(409,'Структура таблицы изменилась. Откат остановлен.');
             }
             const read=()=>db.query('SELECT * FROM '+target+' WHERE '+where+' FOR UPDATE',primary,1);
-            const row=(await read()).rows[0];
+            const before=await read();
+            const row=before.rows[0];
             if (!row || rowToken(record,schema,table,row)!==expected) {
               safeRetry=true;
               throw new RequestError(409,'Строка изменилась. Откат остановлен.');
@@ -701,6 +756,7 @@ async function api(req, res, url, event) {
               safeRetry=true;
               throw new RequestError(409,'База вернула другие значения. Откат остановлен.');
             }
+            rememberChange(event,schema,table,before.columns,row,reverted);
           }
         }));
         database.prepare("UPDATE audit_sql SET undo_state='done' WHERE audit_id=?").run(auditId);

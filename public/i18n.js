@@ -1,4 +1,9 @@
 const english = {
+  "Размер всех таблиц": "All tables total",
+  "Общий размер": "Total size",
+  "Данные до и после": "Before and after",
+  "Для этого запроса снимки строк недоступны.": "Row snapshots are unavailable for this statement.",
+  "Пропущено снимков из-за размера: {count}": "Snapshots omitted due to size: {count}",
   "Тема": "Theme",
   "Светлая": "Light",
   "Тёмная": "Dark",

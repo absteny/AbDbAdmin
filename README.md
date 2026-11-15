@@ -155,7 +155,11 @@ encrypted in the saved profile.
 
 Select a connection to expand its table list in the left sidebar and open
 the table catalog on the right. On MySQL and MariaDB, the catalog includes
-storage engine, collation, size, and row counts reported by the server.
+storage engine, collation, and row counts reported by the server.
+**Total size** includes table data and indexes on MySQL, MariaDB, and
+PostgreSQL. PostgreSQL totals also include TOAST storage and child
+partitions where applicable. The catalog footer also shows the combined
+size, counting each partition once.
 Select a table on either side to browse its rows on the right. The catalog
 provides filtering and selection. Its selection and refresh controls stay
 at the bottom of the screen.
@@ -357,8 +361,12 @@ The log keeps roughly 10,000 events. Administrators can open **View SQL**
 on an entry to see submitted SQL or the statements and bound values used
 for a row or structure change. SQL details are encrypted in the local data
 volume, use the same vault key as saved connections, and are retained for
-the latest 1,000 SQL entries. Large statements are truncated. SQL and
-parameters can contain confidential data, including secrets typed into SQL.
+the latest 1,000 SQL entries. Large statements are truncated. SQL, parameters, and row snapshots can contain confidential data,
+including secrets typed into SQL. **Before and after** shows JSON snapshots
+for captured changes to records in PostgreSQL and InnoDB tables. Inserts
+and deletions use `null` for the absent row. Raw SQL and scripts show the
+executed statement, because the panel does not reconstruct every affected row.
+The journal marks snapshots omitted because of size limits.
 Restrict access to the application administrator account and data volume.
 
 **Undo** shows the compensating SQL and its parameters before confirmation.

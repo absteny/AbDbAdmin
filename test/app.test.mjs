@@ -485,6 +485,7 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
     await request(userPermission,'PUT',{connection:id,level:'view'},admin);
     const structure = (await request(conn+'/schema','GET',undefined,reader)).body;
     assert.ok(structure.tables.some(table=>table[1]==='clay_child'));
+    assert.ok(Number(structure.tables.find(table=>table[1]==='clay_parent')[6])>0);
     assert.deepEqual(structure.relations.find(edge=>edge[1]==='clay_child'),[schema,'clay_child',schema,'clay_parent']);
     assert.deepEqual(Object.keys((await request(conn+'/schema?relations=0','GET',undefined,reader)).body),['tables']);
     assert.deepEqual((await request(conn+'/schema-relations','GET',undefined,reader)).body,structure.relations);
@@ -530,6 +531,13 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
     assert.match((await request(csv,'GET',undefined,reader)).body,/"1","'=changed"/);
     await request(rows,'POST',{action:'insert',values:{id:2,label:'new'}},reader);
     await request(rows,'POST',{action:'delete',key:{id:2}},reader);
+    const writes=(await request('audit','GET',undefined,admin)).body.entries;
+    const snapshot=async action=>{
+      const entry=writes.find(item=>item.action===action && item.actor==='reader' && item.status===200);
+      return (await request('audit/'+entry.id,'GET',undefined,admin)).body.changes;
+    };
+    assert.deepEqual(await snapshot('row.insert'),[{schema,table:'clay_parent',before:null,after:{id:2,label:'new'}}]);
+    assert.deepEqual(await snapshot('row.delete'),[{schema,table:'clay_parent',before:{id:2,label:'new'},after:null}]);
     await request(rows,'POST',{action:'insert',values:{id:2,label:'two'}},reader);
     const batchPage=(await request(rows,'GET',undefined,reader)).body;
     const selected=batchPage.rows.map(([id],index)=>({key:{id},snapshot:batchPage.snapshots[index]}));
@@ -572,6 +580,8 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
     await request('audit/'+entry.id,'GET',undefined,reader,403);
     const detail=(await request('audit/'+entry.id,'GET',undefined,admin)).body;
     assert.match(detail.statements[0].sql,/^UPDATE /);
+    assert.deepEqual(detail.changes,[{schema,table:duplicateTable,before:{id:1,description:'copy me'},
+      after:{id:1,description:'updated'}}]);
     assert.deepEqual(detail.rollback[0].parameters,['copy me',1]);
     await request('audit/'+entry.id+'/undo','POST',{confirmed:false},admin,409);
     await withDatabase(profile,db=>db.query("UPDATE "+duplicateTable+" SET description='newer' WHERE id=1"));

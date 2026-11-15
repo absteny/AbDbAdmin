@@ -33,7 +33,7 @@ metadata, encrypted connection profiles (including SSH credentials when configur
 and an audit log on the operator's
 server. Audit records include available actor names, target identifiers,
 timestamps, actions, and outcomes. SQL details can include query text,
-bound values, and previous values used to undo eligible edits. These details
+bound values, and row snapshots before and after eligible edits. These details
 are stored encrypted on the operator's server and visible to application
 administrators. The application sends queries to configured
 database servers and presents the results to authorized users. CSV exports

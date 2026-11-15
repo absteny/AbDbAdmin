@@ -204,7 +204,7 @@ export async function withDatabase(profile, fn, {scripts=false}={}) {
           const rows = [];
           const timer = setTimeout(() => reject(Object.assign(new Error('Query timed out'),{code:'QUERY_TIMEOUT'})),timeout+2000);
           let columns = [];
-          let affected = null;
+          let affected = null, insertId;
           let bytes=0;
           const accept = row => {
             if (rows.length>=cap || bytes>maxBytes) return;
@@ -216,7 +216,12 @@ export async function withDatabase(profile, fn, {scripts=false}={}) {
             rows.push(row);
           };
           const fail = error => {clearTimeout(timer);reject(error);};
-          const done = () => {clearTimeout(timer);resolve({columns,rows,affected});};
+          const done = () => {
+            clearTimeout(timer);
+            const result={columns,rows,affected};
+            if (insertId!==undefined) Object.defineProperty(result,'insertId',{value:insertId});
+            resolve(result);
+          };
           try {
             if (pg) {
               const command = new Query({text:sql,values,rowMode:'array',queryMode:'extended'});
@@ -236,7 +241,7 @@ export async function withDatabase(profile, fn, {scripts=false}={}) {
               command.on('result',(row,index=0) => {
                 if (index!==0) return;
                 if (Array.isArray(row)) accept(row);
-                else affected = row.affectedRows ?? null;
+                else {affected=row.affectedRows ?? null;insertId=row.insertId;}
               });
               command.once('error',fail);
               command.once('end',done);
@@ -255,9 +260,28 @@ export async function withDatabase(profile, fn, {scripts=false}={}) {
 }
 
 export async function structure({query, pg}, {catalog=false}={}) {
+  if (pg && catalog) {
+    const {rows}=await query(`SELECT t.table_schema,t.table_name,t.table_type,NULL,NULL,NULL,
+      CASE WHEN c.relkind IN ('r','m') THEN pg_catalog.pg_total_relation_size(c.oid)
+           WHEN c.relkind='p' THEN (
+             WITH RECURSIVE leaves(oid) AS (
+               SELECT i.inhrelid FROM pg_catalog.pg_inherits i WHERE i.inhparent=c.oid
+               UNION
+               SELECT i.inhrelid FROM pg_catalog.pg_inherits i JOIN leaves l ON l.oid=i.inhparent
+             )
+             SELECT COALESCE(SUM(pg_catalog.pg_total_relation_size(l.oid)),0)
+             FROM leaves l JOIN pg_catalog.pg_class child ON child.oid=l.oid WHERE child.relkind='r'
+           )
+      END,NULL,c.relispartition
+      FROM information_schema.tables t
+      JOIN pg_catalog.pg_namespace n ON n.nspname=t.table_schema
+      JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid AND c.relname=t.table_name
+      WHERE ${scope(true,'t.')} ORDER BY t.table_schema,t.table_name`);
+    return rows;
+  }
   const {rows} = await query(
-    `SELECT table_schema, table_name, table_type${catalog && !pg
-      ? ', TABLE_ROWS, ENGINE, TABLE_COLLATION, COALESCE(DATA_LENGTH,0)+COALESCE(INDEX_LENGTH,0), DATA_FREE' : ''}
+    `SELECT table_schema, table_name, table_type${catalog
+      ? ', TABLE_ROWS, ENGINE, TABLE_COLLATION, CASE WHEN DATA_LENGTH IS NOT NULL THEN DATA_LENGTH+COALESCE(INDEX_LENGTH,0) END, DATA_FREE' : ''}
      FROM information_schema.tables WHERE ${scope(pg)}
      ORDER BY table_schema, table_name${catalog?'':' LIMIT 500'}`);
   return rows;
