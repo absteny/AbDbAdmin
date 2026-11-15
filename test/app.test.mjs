@@ -283,10 +283,22 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       assert.ok(definition.columns.some(row=>row[0]==='parent_id'));
       assert.ok(definition.indexes.some(row=>row[0]==='test_idx'));
       assert.ok(definition.foreignKeys.some(row=>row[0]==='test_fk'));
+      await request(editor,'POST',{operation:'change-engine',table:'clay_parent',engine:'MyISAM',preview:true},admin,409);
+      await change({operation:'add-column',table,column:{name:'editable',type:'INT',nullable:true}});
+      await withDatabase(profile,db=>db.query('INSERT INTO clay_editor_test(id,editable) VALUES (1,42)'));
+      const typeChange={operation:'modify-column',table,column:{name:'editable',type:'VARCHAR(64)',nullable:true}};
+      await request(editor,'POST',typeChange,admin,409);
+      await change(typeChange);
+      const typed=await request(editor+'?table='+table,'GET',undefined,admin);
+      assert.match(typed.body.columns.find(row=>row[0]==='editable')[1],/^varchar\(64\)$/i);
+      assert.deepEqual((await withDatabase(profile,db=>db.query('SELECT editable FROM clay_editor_test'))).rows,[['42']]);
       await change({operation:'drop-foreign-key',table,name:'test_fk'});
       await change({operation:'drop-index',table,name:'test_idx'});
       await change({operation:'rename-column',table,columnName:'parent_id',name:'related_id'});
       await change({operation:'drop-column',table,columnName:'related_id'});
+      await change({operation:'change-engine',table,engine:'MyISAM'});
+      assert.equal((await request(editor+'?table='+table,'GET',undefined,admin)).body.engine,'MyISAM');
+      await change({operation:'change-engine',table,engine:'InnoDB'});
       await change({operation:'rename-table',table,name:table+'_renamed'});
       await change({operation:'drop-table',table:table+'_renamed'});
     }

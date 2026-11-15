@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
 import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount } from './native-tools.mjs';
-import { schemaStatement, tableDefinition, columnTypes } from './schema-editor.mjs';
+import { schemaStatement, tableDefinition, columnTypes, tableEngines } from './schema-editor.mjs';
 import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
 
@@ -619,28 +619,34 @@ async function api(req, res, url, event) {
         requireValue(user.admin && ['mysql','mariadb'].includes(record.engine),'Требуются права администратора',403);
         if (method==='GET') {
           const table=url.searchParams.get('table');
-          if (!table) return {columnTypes,database:profile.database};
+          if (!table) return {columnTypes,tableEngines,database:profile.database};
           const definition=await remote(profile,db=>tableDefinition(db,profile.database,table));
           requireValue(definition,'Таблица недоступна',404);
           return definition;
         }
         if (method==='POST') {
           const input=await body(req);
-          let sql;
-          try { sql=schemaStatement(profile.database,input); }
-          catch (error) {
-            if (!(error instanceof TypeError)) throw error;
-            throw new RequestError(400,'Проверьте заполнение полей');
-          }
-          if (input.preview===true) {
-            const confirmation=createHmac('sha256',key).update(JSON.stringify([user.id,record.id,record.secret,sql])).digest('hex');
-            return {sql,confirmation};
-          }
-          const expected=createHmac('sha256',key).update(JSON.stringify([user.id,record.id,record.secret,sql])).digest('hex');
-          requireValue(input.confirmation===expected,'Сначала откройте предпросмотр изменений',409);
-          event.action='schema.change';
-          await remote(profile,db=>db.query(sql));
-          return {};
+          const checkDefinition=['modify-column','change-engine'].includes(input.operation);
+          if (checkDefinition) requireValue(typeof input.table==='string' && input.table.length<=64);
+          return remote(profile,async db=>{
+            const definition=checkDefinition?await tableDefinition(db,profile.database,input.table):null;
+            let sql;
+            try { sql=schemaStatement(profile.database,input,definition); }
+            catch (error) {
+              if (!(error instanceof TypeError)) throw error;
+              throw new RequestError(400,'Проверьте заполнение полей');
+            }
+            requireValue(sql,'Для этой таблицы или столбца изменение недоступно в редакторе',409);
+            const confirmation=createHmac('sha256',key).update(JSON.stringify([user.id,record.id,record.secret,sql,definition])).digest('hex');
+            if (input.preview===true) return {sql,confirmation};
+            requireValue(input.confirmation===confirmation,'Сначала откройте предпросмотр изменений',409);
+            event.action='schema.change';
+            if (input.operation==='modify-column') {
+              await db.script("SET SESSION sql_mode=IF(FIND_IN_SET('STRICT_ALL_TABLES',@@SESSION.sql_mode),@@SESSION.sql_mode,CONCAT_WS(',',NULLIF(@@SESSION.sql_mode,''),'STRICT_ALL_TABLES'))",row=>row);
+            }
+            await db.query(sql);
+            return {};
+          });
         }
       }
       if (action === 'schema' && method === 'GET') {
@@ -700,7 +706,11 @@ async function api(req, res, url, event) {
             return;
           }
           const page = rowResult(result,50);
-          if (!demo && record.level!=='view') page.snapshots=result.rows.slice(0,50).map(row=>rowToken(record,schema,table,row));
+          if (!demo && record.level!=='view') {
+            const visible=result.rows.slice(0,50);
+            page.snapshots=visible.map(row=>rowToken(record,schema,table,row));
+            page.limitedCells=visible.map(row=>row.map(value=>Buffer.isBuffer(value) || typeof value==='string' && value.length>4096));
+          }
           for (const row of result.rows) {
             for (const [index,value] of row.entries()) {
               if (result.definition[index]?.[3] && (typeof value === 'string' && value.length > 4096 || typeof value === 'number' && !Number.isFinite(value) || Buffer.isBuffer(value) || (value && typeof value === 'object'))) {

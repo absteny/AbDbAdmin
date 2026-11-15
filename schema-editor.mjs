@@ -2,10 +2,12 @@ import { identifier } from './database.mjs';
 
 export const columnTypes = [
   'BIGINT','INT','SMALLINT','TINYINT','DECIMAL(18,2)','DOUBLE',
-  'VARCHAR(255)','TEXT','DATE','DATETIME','TIMESTAMP','JSON','BLOB',
+  'VARCHAR(32)','VARCHAR(64)','VARCHAR(128)','VARCHAR(255)','VARCHAR(512)','TEXT','DATE','DATETIME','TIMESTAMP','JSON','BLOB',
 ];
 
-export function schemaStatement(database,input) {
+export const tableEngines=['InnoDB','MyISAM'];
+
+export function schemaStatement(database,input,definition) {
   const valid = name=>typeof name==='string' && name.length>0 && name.length<=64 && !/[\u0000-\u001f\u007f]/.test(name) && !name.endsWith(' ');
   const quote = name=>{
     if (!valid(name)) throw new TypeError('Invalid identifier');
@@ -29,6 +31,19 @@ export function schemaStatement(database,input) {
     case 'rename-table': return 'RENAME TABLE '+table+' TO '+schema+'.'+quote(input.name);
     case 'drop-table': return 'DROP TABLE '+table;
     case 'add-column': return alter+'ADD COLUMN '+inputColumn(input.column);
+    case 'modify-column': {
+      inputColumn(input.column);
+      const current=definition?.columnChanges.find(([name])=>name===input.column?.name);
+      if (!current?.[1]) return null;
+      const charset=/^(?:VARCHAR\(\d+\)|TEXT)$/.test(input.column.type) && current[2] && current[3]
+        ? ' CHARACTER SET '+current[2]+' COLLATE '+current[3] : '';
+      return alter+'MODIFY COLUMN '+quote(input.column.name)+' '+input.column.type+charset+
+        (input.column.nullable?' NULL':' NOT NULL');
+    }
+    case 'change-engine':
+      if (!tableEngines.includes(input.engine)) throw new TypeError('Invalid engine');
+      if (!definition || (input.engine==='MyISAM' && definition.hasForeignKeys)) return null;
+      return alter+'ENGINE='+input.engine;
     case 'rename-column': return alter+'RENAME COLUMN '+quote(input.columnName)+' TO '+quote(input.name);
     case 'drop-column': return alter+'DROP COLUMN '+quote(input.columnName);
     case 'add-index': {
@@ -47,13 +62,22 @@ export function schemaStatement(database,input) {
 export async function tableDefinition(db,database,table) {
   const args=[database,table];
   const objects=await db.query(
-    'SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?',args);
+    'SELECT TABLE_TYPE,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?',args);
   if (objects.rows[0]?.[0]!=='BASE TABLE') return null;
   const columns=await db.query(
-    'SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION',args);
+    'SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,COLUMN_COMMENT,CHARACTER_SET_NAME,COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION',args);
   const indexes=await db.query(
     'SELECT INDEX_NAME,COLUMN_NAME,NON_UNIQUE FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY INDEX_NAME,SEQ_IN_INDEX',args);
   const foreignKeys=await db.query(
     'SELECT CONSTRAINT_NAME,COLUMN_NAME,REFERENCED_TABLE_SCHEMA,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME,ORDINAL_POSITION',args);
-  return {columns:columns.rows,indexes:indexes.rows,foreignKeys:foreignKeys.rows};
+  const incoming=await db.query(
+    'SELECT 1 FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_SCHEMA=? AND REFERENCED_TABLE_NAME=? LIMIT 1',args);
+  const simpleName=value=>value==null || /^[a-z0-9_]+$/i.test(value);
+  const columnChanges=columns.rows.map(([name,type,nullable,defaultValue,extra,comment,charset,collation])=>[
+    name,(defaultValue===null || nullable==='YES' && defaultValue==='NULL') && !extra && !comment &&
+      !/\b(?:unsigned|zerofill)\b/i.test(type) && simpleName(charset) && simpleName(collation),
+    charset,collation,
+  ]);
+  return {engine:objects.rows[0][1],columns:columns.rows.map(row=>row.slice(0,5)),columnChanges,
+    hasForeignKeys:Boolean(foreignKeys.rows.length || incoming.rows.length),indexes:indexes.rows,foreignKeys:foreignKeys.rows};
 }

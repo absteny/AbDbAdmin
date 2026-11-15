@@ -657,11 +657,16 @@ async function schemaEditor(target,stamp) {
       const preview=await api(path,'POST',{...input,preview:true});
       openDialog(t('Предпросмотр изменений'),form([
         e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' / '+settings.database),
+        e('p',{},t('Вы точно хотите внести эти изменения?')),
         e('pre',{class:'schema-sql'},preview.sql),
+        input.engine==='MyISAM'?e('p',{},t('MyISAM не поддерживает транзакции и внешние ключи.')):null,
         e('p',{},t('Изменения структуры могут применяться без возможности отката.')),
       ],t('Подтвердить'),async ()=>{
         await api(path,'POST',{...input,confirmation:preview.confirmation});
         state.schema=null;state.table=null;state.offset=0;
+        const nextTable=input.operation==='drop-table'?null:input.operation==='rename-table'?input.name:input.table;
+        pendingTable=nextTable?[settings.database,nextTable]:null;
+        writeRoute(true);
         dialog.close();
         render();
       },button(t('Назад'),()=>openDialog(title,editor))));
@@ -715,12 +720,30 @@ async function schemaEditor(target,stamp) {
       refresh().catch(report);
     }
     const columnList=()=>label(t('Столбец'),pickColumn('columnName',columns));
+    const eligible=new Map(definition.columnChanges);
+    const engineChoices=settings.tableEngines.filter(engine=>engine!==definition.engine && (engine!=='MyISAM' || !definition.hasForeignKeys));
+    function modifyColumn(row) {
+      const [name,type,nullable]=row;
+      const types=settings.columnTypes.map(value=>[value,value]);
+      const initial=types.find(([value])=>value.toLowerCase()===type.toLowerCase())?.[0] ?? '';
+      operation(t('Изменить тип столбца'),[
+        e('strong',{},name+' · '+type),
+        label(t('Новый тип'),select('type',[['',t('Выберите тип')],...types],initial,{required:true})),
+        e('label',{class:'check'},field('nullable','checkbox','1',{checked:nullable==='YES'}),t('Допускает NULL')),
+        e('small',{},t('Смена типа преобразует существующие значения.')),
+      ],v=>({operation:'modify-column',table,column:{name,type:v.type,nullable:Boolean(v.nullable)}}));
+    }
     details.replaceChildren(
       div('row',
+        e('strong',{},t('Движок таблицы')+' · '+definition.engine),
+        engineChoices.length?edit('change-engine','Сменить движок',()=>label(t('Новый движок'),
+          select('engine',engineChoices.map(engine=>[engine,engine]),engineChoices[0])),v=>v):null,
         edit('rename-table','Переименовать таблицу',()=>nameField(),v=>v),
         edit('drop-table','Удалить таблицу',()=>e('p',{},table),()=>({}))),
       e('h3',{},t('Столбцы')),
-      resultTable({columns:[t('Имя'),t('Тип'),t('Допускает NULL'),t('По умолчанию'),t('Дополнительно')],rows:definition.columns}),
+      resultTable({columns:[t('Имя'),t('Тип'),t('Допускает NULL'),t('По умолчанию'),t('Дополнительно')],rows:definition.columns},row=>eligible.get(row[0])
+        ?button(t('Изменить тип'),()=>modifyColumn(row))
+        :e('small',{},t('Особые свойства столбца'))),
       div('row',
         edit('add-column','Добавить столбец',()=>columnFields(0),v=>({column:asColumn(v,0)})),
         edit('rename-column','Переименовать столбец',()=>[columnList(),nameField()],v=>v),
@@ -906,11 +929,21 @@ async function savedViews() {
 
 function rowDialog(data,path,row) {
   const key = Object.fromEntries(data.definition.filter(field=>field[3]).map(([name])=>[name,row?.[data.columns.indexOf(name)]]));
-  const fields = data.definition.map(([name,type],index)=>{
-    const mode = select('mode'+index,[['skip',row?t('Без изменений'):t('По умолчанию')],['value',t('Значение')],['null','NULL']],'skip');
-    const input = field('value'+index,'text',row?.[data.columns.indexOf(name)] ?? '',{hidden:true});
-    mode.addEventListener('change',()=>{input.hidden=mode.value!=='value';});
-    return div('table-picker',label(name+' · '+type,mode),input);
+  const rowIndex=row?data.rows.indexOf(row):-1;
+  const fields = data.definition.map(([name,type,nullable],index)=>{
+    const mode = select('mode'+index,[['skip',row?t('Без изменений'):t('По умолчанию')],['value',t('Значение')],
+      ...(nullable==='YES'?[['null','NULL']]:[])],'skip',{'aria-label':name});
+    const columnIndex=data.columns.indexOf(name);
+    const limited=Boolean(data.limitedCells?.[rowIndex]?.[columnIndex]);
+    const original=limited?'':String(row?.[columnIndex] ?? '');
+    const input=field('value'+index,'text',original,{'aria-label':name+' · '+type,disabled:limited});
+    input.addEventListener('input',()=>{mode.value='value';});
+    mode.addEventListener('change',()=>{
+      input.disabled=mode.value==='null' || limited && mode.value==='skip';
+      if (mode.value==='skip') input.value=original;
+    });
+    return div('table-picker',label(name+' · '+type,mode),div('stack',input,
+      limited?e('small',{},t('Полное значение не загружено. Можно ввести новое значение.')):null));
   });
   const title=row?t('Изменить строку'):t('Добавить строку');
   const editor=form(fields,t('Предпросмотр изменений'),async dataInput=>{
@@ -934,6 +967,7 @@ function rowDialog(data,path,row) {
     const production=state.connection.production;
     openDialog(t('Предпросмотр изменений'),form([
       e('strong',{},(production?'PRODUCTION · ':'')+target),
+      e('p',{},t('Вы точно хотите внести эти изменения?')),
       e('p',{},t(action==='delete'?'Удалить строку':action==='insert'?'Добавить строку':'Изменить строку')+' · 1'),
       row?e('small',{},t('Первичный ключ')+' · '+JSON.stringify(key)):null,
       resultTable({columns:[t('Столбец'),t('Было'),t('Станет')],rows:changes}),
@@ -950,15 +984,22 @@ function rowDialog(data,path,row) {
 
 function sqlView(target) {
   const output = div('panel stack');
+  const connection=state.connection;
+  const path=route('sql');
   target.append(div('panel stack',e('h2',{},t('SQL-консоль')),
-    form([
-      label(t('Одна SQL-команда'),e('textarea',{name:'sql',class:'code',placeholder:'SELECT …',spellcheck:'false',required:true,maxlength:65000})),
-      label(t('Подтверждаю выполнение команды в выбранной базе'),field('confirm','checkbox','1',{required:true}),'check'),
-    ],t('Выполнить'),async (data,formNode)=>{
-      const result = await api(route('sql'),'POST',{sql:data.sql});
-      formNode.elements.confirm.checked=false;
-      output.replaceChildren(resultTable(result));
-      if (result.truncated) output.append(e('small',{},t('Показаны первые 200 строк.')));
+    form(label(t('Одна SQL-команда'),e('textarea',{name:'sql',class:'code',placeholder:'SELECT …',
+      spellcheck:'false',required:true,maxlength:65000})),
+    t('Предпросмотр изменений'),async ({sql})=>{
+      openDialog(t('Предпросмотр изменений'),form([
+        e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name),
+        e('p',{},t('Вы точно хотите выполнить эту SQL-команду?')),
+        e('pre',{class:'schema-sql'},sql),
+      ],t('Выполнить'),async ()=>{
+        const result=await api(path,'POST',{sql});
+        dialog.close();
+        output.replaceChildren(resultTable(result));
+        if (result.truncated) output.append(e('small',{},t('Показаны первые 200 строк.')));
+      }));
     })),output);
 }
 function graph(target) {

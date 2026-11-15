@@ -224,8 +224,21 @@ operation. The grant list excludes inherited roles, global grants, and
 table-level grants. The editor prevents deleting or changing the password
 of the account used by the current connection.
 
+### Change a column type or table engine
+
+In **Schema editor**, use **Change type** beside a supported column.
+Review its existing type, choose a new type and nullability, and confirm
+the generated SQL. Columns with special properties such as explicit
+defaults, comments, generation expressions, or unsigned modifiers are
+excluded from this control. The server validates data conversions.
+
+Use **Change engine** to convert between InnoDB and MyISAM where supported.
+The editor blocks conversion to MyISAM when the table has an incoming or
+outgoing foreign key. Moving to MyISAM changes transaction support.
+
 ### Review row changes
 
+Type directly into the row editor. Typing marks the field as changed.
 Use **Review changes** after editing or inserting a row. Deleting from the
 row editor opens the same preview. The preview shows the connection,
 schema, table, primary key when available, and before/after values. Set
