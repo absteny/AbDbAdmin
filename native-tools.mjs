@@ -75,3 +75,39 @@ export async function databaseObjects(db,database) {
     'SELECT EVENT_NAME,STATUS,EVENT_TYPE FROM information_schema.EVENTS WHERE EVENT_SCHEMA=? ORDER BY EVENT_NAME LIMIT 200',[database]);
   return {routines:routines.rows,triggers:triggers.rows,events:events.rows};
 }
+
+export async function exportTableSql(db,database,table) {
+  const quote=name=>identifier(false,name);
+  const info=await db.query(
+    "SELECT COLUMN_NAME,DATA_TYPE,EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION",[database,table]);
+  const tables=await db.query(
+    "SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?",[database,table]);
+  if (tables.rows[0]?.[0]!=='BASE TABLE' || !info.rows.length) return {error:'table'};
+  const included=info.rows.filter(([, ,extra])=>!/(?:VIRTUAL|STORED|PERSISTENT) GENERATED/i.test(extra));
+  if (included.some(([,type])=>/^(?:geometry|point|linestring|polygon|multi(?:point|linestring|polygon)|geometrycollection|vector)$/.test(type))) {
+    return {error:'type'};
+  }
+  const binary=type=>/^(?:bit|binary|varbinary|tinyblob|blob|mediumblob|longblob)$/.test(type);
+  const ref=quote(database)+'.'+quote(table);
+  const create=(await db.query('SHOW CREATE TABLE '+ref)).rows[0][1];
+  const projections=included.map(([name,type])=>{
+    const column=quote(name);
+    const hex=binary(type)?'HEX(CAST('+column+' AS BINARY))':'HEX(CONVERT('+column+' USING utf8mb4))';
+    return "CASE WHEN OCTET_LENGTH("+column+") > 131072 THEN '!oversize' ELSE "+hex+" END";
+  });
+  const order=(await columns(db,database,table)).filter(row=>row[3]).map(([name])=>quote(name));
+  const data=await db.query('SELECT '+(projections.length?projections.join(', '):'1')+' FROM '+ref+
+    (order.length?' ORDER BY '+order.join(', '):'')+' LIMIT 1001',[],1001,1048576);
+  if (data.rows.length>1000) return {error:'size'};
+  const statement='INSERT INTO '+quote(table)+' ('+included.map(([name])=>quote(name)).join(', ')+') VALUES (';
+  let sql='-- AbDbAdmin table export; run in the intended database.\n'+create+';\n';
+  for (const row of data.rows) {
+    if (row.includes('!oversize')) return {error:'size'};
+    const values=included.map(([,type],i)=>row[i]===null?'NULL':binary(type)
+      ? "X'"+row[i]+"'"
+      : "CONVERT(X'"+row[i]+"' USING utf8mb4)");
+    sql+=statement+values.join(', ')+');\n';
+    if (Buffer.byteLength(sql)>1048576) return {error:'size'};
+  }
+  return {sql,rows:data.rows.length};
+}

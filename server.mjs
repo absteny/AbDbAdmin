@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
-import { parseCsv, importCsv, searchDatabase, databaseObjects } from './native-tools.mjs';
+import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes } from './schema-editor.mjs';
 import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
@@ -243,16 +243,17 @@ async function testConnection(profile) {
     return {peer:databasePeer(rows[0]?.[0])};
   },true);
 }
-async function remote(profile, fn, diagnosing=false) {
+async function remote(profile, fn, diagnosing=false, options) {
   requireValue(active < 12, 'Слишком много одновременных запросов', 503);
   active++;
-  try { return await withDatabase(profile, fn); }
+  try { return await withDatabase(profile, fn, options); }
   catch (error) {
     if (error instanceof RequestError) throw error;
     const messages = {
       ECONNREFUSED:'Подключение отклонено. Проверьте хост и порт БД',
       ENOTFOUND:'Хост БД не найден',
       ETIMEDOUT:'Сервер БД не ответил вовремя',
+      EXPORT_TOO_LARGE:'Таблица превышает лимит экспорта SQL',
       QUERY_TIMEOUT:'Истекло время ожидания запроса',
       PROTOCOL_SEQUENCE_TIMEOUT:'Истекло время ожидания запроса',
       ER_ACCESS_DENIED_ERROR:'MySQL или MariaDB отклонила вход. Проверьте пароль и разрешённый хост учётной записи на сервере БД.',
@@ -510,6 +511,40 @@ async function api(req, res, url, event) {
       const demo = record.engine==='demo';
       const profile = demo ? null : reveal(record.secret);
       const mysql = ['mysql','mariadb'].includes(record.engine);
+      if (action==='sql-script' && method==='POST') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        const {sql,confirmation}=await body(req,6400000);
+        requireValue(typeof sql==='string' && sql.trim() && Buffer.byteLength(sql)<=1048576);
+        const expected=createHmac('sha256',key).update(JSON.stringify(['script',user.id,record.secret,sql])).digest('hex');
+        if (confirmation===undefined) return {confirmation:expected,database:profile.database};
+        requireValue(confirmation===expected,'Сначала откройте предпросмотр изменений',409);
+        event.action='sql.script';
+        return remote(profile,db=>db.script(sql,row=>row.map(limitText)),false,{scripts:true});
+      }
+      if (action==='sql-export' && method==='GET') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        const table=url.searchParams.get('table');
+        requireValue(table && table.length<=64);
+        event.action='sql.export';
+        const result=await remote(profile,db=>exportTableSql(db,profile.database,table));
+        requireValue(result.error!=='table','Таблица недоступна',404);
+        requireValue(result.error!=='type','Экспорт SQL не поддерживает этот тип столбца',400);
+        requireValue(!result.error,'Таблица превышает лимит экспорта SQL',413);
+        audit(event,200);
+        event.action=null;
+        res.setHeader('Content-Type','application/sql; charset=utf-8');
+        res.setHeader('Content-Disposition','attachment; filename="abdbadmin-table.sql"');
+        res.end(result.sql);
+        return;
+      }
+      if (action==='maintenance' && method==='POST') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        const {table,operation}=await body(req);
+        requireValue(typeof table==='string' && table.length>0 && table.length<=64 && ['CHECK','ANALYZE','OPTIMIZE'].includes(operation));
+        const quote=name=>identifier(false,name);
+        event.action='table.maintenance';
+        return remote(profile,async db=>(await db.script(operation+' TABLE '+quote(profile.database)+'.'+quote(table),row=>row.map(limitText))).sets[0]);
+      }
       if (action==='database-objects' && method==='GET') {
         requireValue(user.admin && mysql,'Требуются права администратора',403);
         return remote(profile,db=>databaseObjects(db,profile.database));

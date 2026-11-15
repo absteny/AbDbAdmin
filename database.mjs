@@ -8,7 +8,7 @@ export function identifier(pg, value) {
   return quote + value.replaceAll(quote, quote + quote) + quote;
 }
 
-export async function withDatabase(profile, fn) {
+export async function withDatabase(profile, fn, {scripts=false}={}) {
   const pg = profile.engine === 'postgres';
   const address = {
     host: profile.host, port: profile.port, user: profile.user,
@@ -31,7 +31,7 @@ export async function withDatabase(profile, fn) {
     } else {
       const { default: mysql } = await import('mysql2');
       client = mysql.createConnection({
-        ...address, connectTimeout: 5000, multipleStatements: false, rowsAsArray: true, flags: '-LOCAL_FILES',
+        ...address, connectTimeout: 5000, multipleStatements: scripts, rowsAsArray: true, flags: '-LOCAL_FILES',
         supportBigNumbers: true, bigNumberStrings: true, dateStrings: true,
         ssl: profile.tls ? { rejectUnauthorized: true, verifyIdentity: true, ca: profile.ca || undefined } : undefined,
       });
@@ -40,6 +40,36 @@ export async function withDatabase(profile, fn) {
     }
     return await fn({
       pg,
+      async script(sql, sanitize) {
+        return new Promise((resolve,reject)=>{
+          const sets=[];
+          const command=client.query({sql,timeout});
+          const timer=setTimeout(()=>reject(Object.assign(new Error('Script timed out'),{code:'QUERY_TIMEOUT'})),timeout+2000);
+          let truncated=false, bytes=0;
+          function result(index) {
+            if (index>=25) {truncated=true;return null;}
+            return sets[index] ??= {columns:[],rows:[],affected:null,truncated:false};
+          }
+          command.on('fields',(fields,index)=>{
+            if (!fields) return;
+            const set=result(index);
+            if (set) set.columns=fields.map(field=>field.name);
+          });
+          command.on('result',(row,index)=>{
+            const set=result(index);
+            if (!set) return;
+            if (!Array.isArray(row)) set.affected=row.affectedRows ?? null;
+            else if (set.rows.length<100 && bytes<=1048576) {
+              const clean=sanitize(row);
+              bytes+=Buffer.byteLength(JSON.stringify(clean));
+              if (bytes<=1048576) set.rows.push(clean);
+              else set.truncated=true;
+            } else set.truncated=true;
+          });
+          command.once('error',error=>{clearTimeout(timer);reject(error);});
+          command.once('end',()=>{clearTimeout(timer);resolve({sets:sets.filter(Boolean),truncated});});
+        });
+      },
       async transaction(callback) {
         const control = pg ? client : client.promise();
         await control.query('START TRANSACTION');
@@ -52,14 +82,21 @@ export async function withDatabase(profile, fn) {
           throw error;
         }
       },
-      async query(sql, values = [], cap = Infinity) {
+      async query(sql, values = [], cap = Infinity, maxBytes = Infinity) {
         return new Promise((resolve, reject) => {
           const rows = [];
           const timer = setTimeout(() => reject(Object.assign(new Error('Query timed out'),{code:'QUERY_TIMEOUT'})),timeout+2000);
           let columns = [];
           let affected = null;
+          let bytes=0;
           const accept = row => {
-            if (rows.length < cap) rows.push(row);
+            if (rows.length>=cap || bytes>maxBytes) return;
+            if (maxBytes!==Infinity) bytes+=Buffer.byteLength(JSON.stringify(row));
+            if (bytes>maxBytes) {
+              fail(Object.assign(new Error('Export too large'),{code:'EXPORT_TOO_LARGE'}));
+              return;
+            }
+            rows.push(row);
           };
           const fail = error => {clearTimeout(timer);reject(error);};
           const done = () => {clearTimeout(timer);resolve({columns,rows,affected});};

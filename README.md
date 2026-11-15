@@ -155,6 +155,25 @@ five tables per request, 30 text columns per table, and five displayed
 matches per table. **Database objects** shows routines, triggers, and
 events visible to the connected database account.
 
+### Run SQL scripts and restore a table
+
+On MySQL and MariaDB, administrators can open **SQL scripts**, select a
+UTF-8 SQL file or paste SQL, and confirm after reviewing the target and
+script preview. The file limit is 1 MB. Multiple result sets are displayed
+within the response limits. Client commands such as DELIMITER are outside
+this workflow. Statements execute with the saved database account's
+privileges and can target other databases that account can access. Errors
+can leave earlier changes applied.
+
+Use **Export SQL** in a base table's **Browse** view for a single-table
+schema and data export, up to 1,000 rows and 1 MB. Restore it through
+**SQL scripts** in the intended database. Referenced tables must already
+exist where required. The export excludes triggers, routines, events,
+and spatial or vector columns. Use database backup tools for full backups.
+
+**Table maintenance** provides Check, Analyze, and Optimize. Availability
+and locking depend on the database engine and table.
+
 ### Review row changes
 
 Use **Review changes** after editing or inserting a row. Deleting from the

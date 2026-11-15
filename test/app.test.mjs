@@ -66,7 +66,7 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       },
       body:data===undefined?undefined:JSON.stringify(data),
     });
-    const content = response.headers.get('Content-Type')?.startsWith('text/csv')
+    const content = /^(text\/csv|application\/sql)/.test(response.headers.get('Content-Type')||'')
       ? await response.text() : await response.json();
     assert.equal(response.status,code,JSON.stringify(content));
     return {body:content,cookie:response.headers.get('Set-Cookie')?.split(';')[0]};
@@ -180,6 +180,28 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       const results=await request(conn+'/database-search','POST',{text:'needle'},admin);
       assert.ok(results.body.results.some(result=>result.table==='clay_parent' && result.rows[0][0]==='Needle, with "quotes"'));
       await withDatabase(profile,db=>db.query('DELETE FROM clay_parent WHERE id=803'));
+      const script=conn+'/sql-script';
+      const probe='SELECT 13 AS first; SELECT 29 AS second';
+      const {body:batchPreview}=await request(script,'POST',{sql:probe},admin);
+      await request(script,'POST',{sql:probe+'; SELECT 3',confirmation:batchPreview.confirmation},admin,409);
+      const {body:batch}=await request(script,'POST',{sql:probe,confirmation:batchPreview.confirmation},admin);
+      assert.deepEqual(batch.sets.map(set=>String(set.rows[0][0])),["13","29"]);
+      const roundtrip='clay_dump_test';
+      await withDatabase(profile,async db=>{
+        await db.query('DROP TABLE IF EXISTS clay_dump_test');
+        await db.query('CREATE TABLE clay_dump_test (id INT PRIMARY KEY, label VARCHAR(80), payload VARBINARY(8))');
+        await db.query('INSERT INTO clay_dump_test VALUES (1,?,?)',["quotes ' and line\nbreak",Buffer.from([0,1,255])]);
+      });
+      const {body:dump}=await request(conn+'/sql-export?table='+roundtrip,'GET',undefined,admin);
+      assert.match(dump,/CREATE TABLE/);
+      await withDatabase(profile,db=>db.query('DROP TABLE clay_dump_test'));
+      const {body:restore}=await request(script,'POST',{sql:dump},admin);
+      await request(script,'POST',{sql:dump,confirmation:restore.confirmation},admin);
+      const readback=await withDatabase(profile,db=>db.query('SELECT * FROM clay_dump_test'));
+      assert.deepEqual(readback.rows,[[1,"quotes ' and line\nbreak",Buffer.from([0,1,255])]]);
+      const checked=await request(conn+'/maintenance','POST',{table:roundtrip,operation:'CHECK'},admin);
+      assert.ok(checked.body.rows.length);
+      await withDatabase(profile,db=>db.query('DROP TABLE clay_dump_test'));
       const editor=conn+'/structure-editor';
       const grant='users/'+readerId+'/permissions';
       await request(grant,'PUT',{connection:id,level:'sql'},admin);
