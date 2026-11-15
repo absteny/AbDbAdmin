@@ -93,8 +93,8 @@ docker compose exec -T abdbadmin node --disable-warning=ExperimentalWarning serv
 1. Select **Add connection** in the sidebar.
 2. Choose PostgreSQL, MySQL, or MariaDB. Enter the host, port, database name,
    and a database account. AbDbAdmin tests the connection before saving it.
-3. Keep TLS certificate verification enabled. If your database uses a private
-   CA, paste its certificate in PEM format into the CA field.
+3. New connections use TLS certificate verification. If your database uses a
+   private CA, expand **Database CA certificate** and paste its PEM certificate.
 4. Select the saved connection. Select a table in **Structure** to browse data, **3D schema**
    to explore foreign keys, or **SQL** to run statements if you have access.
    All database connections are marked **PRODUCTION**. Access permissions
@@ -116,8 +116,8 @@ from the Docker host on the database side.
 4. Enter the database host and port as seen from the SSH server. If the
    database runs on the same server and listens on loopback, use
    `127.0.0.1:3306`. Enter your database username and password separately.
-5. Choose **Test and save**. Keep TLS verification enabled if your database
-   uses TLS and enter a database host name that matches its certificate.
+5. Choose **Test and save**. Use a database host name that matches its
+   TLS certificate.
 
 The SSH server must allow TCP forwarding to the database. AbDbAdmin selects
 a trusted SSH host key automatically. Existing SSH connections can reuse their

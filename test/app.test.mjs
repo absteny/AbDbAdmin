@@ -245,7 +245,10 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
         assert.equal(settings.ssh.hasPassphrase,true);
         assert.ok(!Object.hasOwn(settings.ssh,'privateKey'));
         assert.ok(!Object.hasOwn(settings.ssh,'passphrase'));
-        await request(savedPath+'/settings','PUT',settings,admin);
+        const {tls,...withoutTls}=settings;
+        assert.equal(tls,false);
+        await request(savedPath+'/settings','PUT',withoutTls,admin);
+        assert.equal((await request(savedPath+'/settings','GET',undefined,admin)).body.tls,false);
         const viaSsh=(await request(savedPath+'/sql','POST',{sql:'SELECT 314 AS answer'},admin)).body;
         assert.equal(Number(viaSsh.rows[0][0]),314);
         const wal=await readFile(join(directory,'claydb.sqlite-wal'));

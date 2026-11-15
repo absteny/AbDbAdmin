@@ -259,7 +259,8 @@ function sshConfiguration(input,previous) {
 }
 
 function configuration(input, previous) {
-  const {name, engine, host, port, user, database, tls, ca = ''} = input;
+  const {name, engine, host, port, user, database, ca = ''} = input;
+  const tls=input.tls===undefined?previous?.tls ?? true:input.tls;
   const password = typeof input.password === 'string' ? input.password : previous?.password;
   requireValue(['postgres','mysql','mariadb'].includes(engine) && typeof tls === 'boolean');
   requireValue([name,host,user,database].every(value => typeof value === 'string' && value.trim() && value.length <= 255));

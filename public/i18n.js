@@ -1,4 +1,6 @@
 const english = {
+  "Сертификат CA базы данных": "Database CA certificate",
+  "Закрыть уведомление": "Dismiss notification",
   "Подключение остановлено до входа в базу. Для этого SSH-адреса не настроен доверенный ключ.": "The connection stopped before database sign-in. This SSH address has no trusted key configured.",
   "Ошибка SSH": "SSH connection failed",
   "Ошибка подключения к базе": "Database connection failed",
@@ -322,11 +324,6 @@ const english = {
   "Хост БД недоступен. Проверьте сеть, VPN и правила доступа.": "The database host is unreachable. Check the network, VPN, and access rules.",
   "Не удалось разрешить имя хоста БД. Проверьте DNS и повторите попытку.": "Could not resolve the database host. Check DNS and try again.",
   "Срок действия TLS-сертификата БД истёк.": "The database TLS certificate has expired.",
-  "Пока неизвестен": "Unknown until tested",
-  "Ваш IP для доступа к БД": "Your source IP for database access",
-  "Адрес по данным сервера БД": "Address reported by the database",
-  "Настроенный исходящий IP": "Configured source IP",
-  "Нажмите «Проверить подключение». Если сервер не сообщил адрес, уточните его в журнале БД или у администратора сети.": "Select Test connection. If the server does not report an address, check the database logs or ask your network administrator.",
   "Подключение работает. Настройки не сохранены.": "Connection succeeded. Settings have not been saved.",
   "Проверить подключение": "Test connection"
 ,
@@ -396,7 +393,6 @@ const english = {
   "Пользователь БД": "Database user",
   "Пароль БД": "Database password",
   "Сохранённый пароль": "Stored password",
-  "TLS с проверкой сертификата": "TLS with certificate verification",
   "Новый PEM-сертификат CA (текущий сохранён)": "New CA certificate in PEM format (current one is saved)",
   "PEM-сертификат CA (необязательно)": "CA certificate in PEM format (optional)",
   "Удалить сохранённый сертификат CA": "Remove the saved CA certificate",

@@ -24,7 +24,6 @@ const notice = document.querySelector('#notice');
 const labelKeys = {postgres:'PostgreSQL',mysql:'MySQL',mariadb:'MariaDB',view:'Просмотр',edit:'Редактирование строк',sql:'Доступ к SQL',admin:'Администратор'};
 const state = {user:null,connections:[],connection:null,view:'tables',schema:null,tables:[],relations:[],table:null,offset:0};
 let renderId = 0;
-let noticeTimer;
 
 function element(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -44,14 +43,41 @@ const brand = ()=>div('brand',e('span',{class:'mark','aria-hidden':true},'◈'),
 const field = (name,type='text',value='',attrs={})=>e('input',{name,type,value,...attrs});
 const label = (title,input,style)=>e('label',{class:style},title,input);
 const submit = title=>e('button',{class:'primary',type:'submit'},title);
-const report = error=>toast(error.message || String(error));
+const report = error=>toast(error.message || String(error),'error');
 const click = fn=>()=>Promise.resolve().then(fn).catch(report);
 
-function toast(message) {
-  notice.textContent = message;
-  notice.hidden = false;
-  clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(()=>{notice.hidden=true;},4500);
+function toast(message,kind='success') {
+  let timer;
+  const remove=()=>{
+    clearTimeout(timer);
+    item.remove();
+    if (!notice.children.length) {
+      if (notice.hasAttribute('popover')) {
+        notice.hidePopover();
+        notice.removeAttribute('popover');
+      }
+      notice.hidden=true;
+    }
+  };
+  const item=div('toast toast-'+kind,
+    e('span',{class:'toast-symbol','aria-hidden':'true'},kind==='error'?'!':'✓'),
+    e('span',{class:'toast-message',role:kind==='error'?'alert':'status'},message),
+    button('×',remove,'toast-dismiss',{'aria-label':t('Закрыть уведомление')}));
+  if (notice.hidden) {
+    notice.hidden=false;
+    if (typeof notice.showPopover==='function') {
+      notice.setAttribute('popover','manual');
+      notice.showPopover();
+    }
+  }
+  notice.append(item);
+  while (notice.children.length>4) notice.firstElementChild.remove();
+  const resume=()=>{clearTimeout(timer);timer=setTimeout(remove,kind==='error'?7000:4500);};
+  item.addEventListener('pointerenter',()=>clearTimeout(timer));
+  item.addEventListener('pointerleave',()=>{if(!item.contains(document.activeElement)) resume();});
+  item.addEventListener('focusin',()=>clearTimeout(timer));
+  item.addEventListener('focusout',event=>{if(!item.contains(event.relatedTarget) && !item.matches(':hover')) resume();});
+  resume();
 }
 const requests=new Map();
 const requestLoader=document.querySelector('#request-loader');
@@ -147,7 +173,7 @@ function form(children, text, callback, footer=[]) {
     actions.forEach(action=>{action.disabled=true;});
     error.textContent = '';
     try {await callback(Object.fromEntries(new FormData(target)),target,event.submitter);}
-    catch (reason) {error.textContent = reason.message;}
+    catch (reason) {error.textContent = reason.message;toast(reason.message,'error');}
     finally {actions.forEach(action=>{action.disabled=false;});}
   }},children,error,div('row',submit(text),footer));
 }
@@ -404,7 +430,6 @@ function editConnection(config={}, id=null) {
   }
   engine.addEventListener('change',syncSsh);
   syncSsh();
-  const observed=e('strong',{},t('Пока неизвестен'));
   const result=div('connection-result stack');
   result.hidden=true;
   result.setAttribute('role','status');
@@ -416,7 +441,6 @@ function editConnection(config={}, id=null) {
     if (kind!=='pending') result.scrollIntoView?.({block:'nearest'});
   }
   function showFailure(error) {
-    if (error.peer) observed.textContent=error.peer;
     const title=error.stage==='ssh'?'Ошибка SSH':error.stage==='database'?'Ошибка подключения к базе':'Не удалось проверить подключение';
     const setup=error.code==='SSH_HOST_KEY_UNCONFIGURED' && error.endpoint?div('stack',
       e('p',{},t('Адрес для настройки доверия')),e('code',{},error.endpoint),
@@ -425,36 +449,30 @@ function editConnection(config={}, id=null) {
       e('a',{href:'https://github.com/absteny/AbDbAdmin#connect-to-mysql-or-mariadb-through-ssh',target:'_blank',rel:'noopener'},t('Инструкция по настройке SSH')),
     ):null;
     showResult('error',title,e('p',{},error.message),setup);
+    toast(t(title),'error');
   }
-  const network=div('network wide stack',
-    e('strong',{},t('Ваш IP для доступа к БД')),
-    div('row',e('span',{},t('Адрес по данным сервера БД')),observed),
-    state.user.sourceIp ? div('row',e('span',{},t('Настроенный исходящий IP')),e('code',{},state.user.sourceIp)) : null,
-    e('small',{},t('Нажмите «Проверить подключение». Если сервер не сообщил адрес, уточните его в журнале БД или у администратора сети.')),
-  );
   const content = form(div('fields',
     modes,
-    label(t('Название'),field('name','text',config.name,{required:true,maxlength:255}),'wide'),
-    label(t('СУБД'),engine),sshFields,
+    div('connection-identity wide',
+      label(t('Название'),field('name','text',config.name,{required:true,maxlength:255})),
+      label(t('СУБД'),engine)),
+    sshFields,
     e('strong',{class:'wide'},t('Настройки базы данных')),
     label(t('Порт'),port),
     label(t('Хост'),targetHost),
     label(t('База данных'),field('database','text',config.database,{required:true})),
     label(t('Пользователь БД'),field('user','text',config.user,{required:true})),
     label(t('Пароль БД'),field('password','password','',{autocomplete:'new-password',placeholder:id?t('Сохранённый пароль'):''})),
-    network,
-    e('label',{class:'check wide'},field('tls','checkbox','1',{checked:config.tls ?? true}),t('TLS с проверкой сертификата')),
-    label(config.customCa?t('Новый PEM-сертификат CA (текущий сохранён)'):t('PEM-сертификат CA (необязательно)'),e('textarea',{name:'ca'}),'wide'),
-    config.customCa?e('label',{class:'check wide'},field('removeCa','checkbox','1'),t('Удалить сохранённый сертификат CA')):null,
+    e('details',{class:'wide connection-ca'},e('summary',{},t('Сертификат CA базы данных')),
+      label(config.customCa?t('Новый PEM-сертификат CA (текущий сохранён)'):t('PEM-сертификат CA (необязательно)'),e('textarea',{name:'ca'})),
+      config.customCa?e('label',{class:'check'},field('removeCa','checkbox','1'),t('Удалить сохранённый сертификат CA')):null),
     id?e('label',{class:'check wide'},field('resetPassword','checkbox','1'),t('Сохранить пустой пароль БД')):null,
   ),t('Проверить и сохранить'),async (data,_form,action)=>{
     const testing=action?.value==='test';
     showResult('pending',testing?'Проверяем подключение…':'Проверяем и сохраняем подключение…');
-    observed.textContent=t('Пока неизвестен');
     let next=id;
     try {
       data.port=Number(data.port);
-      data.tls=Boolean(data.tls);
       data.ssh=null;
       if (!sshFields.disabled) {
         await keyLoad;
@@ -468,14 +486,13 @@ function editConnection(config={}, id=null) {
       if (id && !data.password && !data.resetPassword) delete data.password;
       if (id && !data.ca && !data.removeCa) delete data.ca;
       if (testing) {
-        const checked=await api('connection-test','POST',{...data,id});
-        if (checked.peer) observed.textContent=checked.peer;
+        await api('connection-test','POST',{...data,id});
         const titles={mysql:'MySQL',mariadb:'MariaDB',postgres:'PostgreSQL'};
         const routeLabel=data.ssh?t('Через SSH'):t('Прямое подключение');
         showResult('success','Подключение проверено',
           e('p',{},routeLabel+' · '+titles[data.engine]+' · '+data.host+':'+data.port+' / '+data.database),
-          checked.peer?e('small',{},t('Адрес по данным сервера БД')+' · '+checked.peer):null,
           e('small',{},t('Настройки не сохранены. Нажмите «Проверить и сохранить».')));
+        toast(t('Подключение проверено'));
         return;
       }
       if (id) await api(`connections/${id}/settings`,'PUT',data);
