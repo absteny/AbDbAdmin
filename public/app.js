@@ -114,6 +114,7 @@ function select(name, entries, value, attrs={}) {
 const utilityRoutes=new Set(['users','audit','demo']);
 const databaseRoutes=new Set(['structure','tables','graph','sql','database-search','sql-script','database-objects','schema-editor','server-status','database-accounts','database-backup']);
 let pendingTable=null;
+let pendingTableAction=null;
 let stopRowLoading=()=>{};
 let sidebarContext=null;
 let scriptDraft=null;
@@ -146,6 +147,7 @@ function writeRoute(replace=false) {
 }
 function restoreRoute() {
   if (!state.user) return;
+  pendingTableAction=null;
   const params=new URLSearchParams(location.hash.slice(1));
   const connection=state.connections.find(item=>String(item.id)===params.get('connection')) ?? null;
   const requested=params.get('view');
@@ -191,6 +193,7 @@ async function refreshConnections() {
   if (state.connection) state.connection = state.connections.find(item=>item.id===state.connection.id) || null;
 }
 async function choose(id) {
+  pendingTableAction=null;
   state.connection = state.connections.find(item=>item.id===id);
   pendingTable=null;
   Object.assign(state,{view:'structure',schema:null,tables:[],relations:[],table:null,offset:0});
@@ -222,7 +225,7 @@ function render() {
   const schemaReady=workspace?loadWorkspaceSchema(active.id,stamp,tableSidebar):null;
   const heading = div('hero',e('h1',{},utility?t(pages[state.view]):active?.name || t('Подключения')),
     active && !utility ? e('p',{},engine+' · '+t(labelKeys[active.level])+(active.production?' · PRODUCTION':'')) : null);
-  app.replaceChildren(div(workspace?'shell schema-shell':'shell',div('sidebar',
+  app.replaceChildren(div(workspace?'shell schema-shell'+(state.view==='structure'?' catalog-shell':''):'shell',div('sidebar',
     brand(),
     div('row spread',e('span',{class:'nav-heading'},t('Подключения')),admin?button('+',()=>editConnection(), 'primary',{'aria-label':t('Добавить подключение')}):null),
     div('nav connection-tree',state.connections.map(connection=>div('connection-branch',
@@ -842,10 +845,15 @@ async function schemaEditor(target,stamp) {
   target.replaceChildren(div('panel stack',
     div('row spread',e('h2',{},t('Редактор структуры')),button(t('Создать таблицу'),createTable,'primary')),
     tables.length?label(t('Таблица'),picker):e('p',{},t('Подходящих таблиц нет.')),details));
+  if (pendingTableAction==='create-table') {
+    pendingTableAction=null;
+    createTable();
+  }
   await loadDefinition();
 }
 
-function openWorkspaceTable(table,view='tables') {
+function openWorkspaceTable(table,view='tables',action=null) {
+  pendingTableAction=action;
   pendingTable=null;
   state.table=table;
   state.offset=0;
@@ -880,7 +888,9 @@ async function loadWorkspaceSchema(id,stamp,sidebar) {
       if (!tables.length) list.append(e('small',{},t('Подходящих таблиц нет.')));
     }
     search.addEventListener('input',()=>{context.needle=search.value;context.scroll=0;filter();list.scrollTop=0;});
-    sidebar.replaceChildren(search,list);
+    const mysql=['mysql','mariadb'].includes(state.connection.engine);
+    sidebar.replaceChildren(search,state.user.admin && mysql
+      ?button(t('Новая таблица'),()=>{pendingTableAction='create-table';setView('schema-editor');},'tree-create'):document.createTextNode(''),list);
     filter();
     queueMicrotask(()=>{if (list.isConnected) list.scrollTop=context.scroll;});
     return true;
@@ -893,37 +903,109 @@ async function loadWorkspaceSchema(id,stamp,sidebar) {
 function databaseStructure(target) {
   const search=e('input',{type:'search',placeholder:t('Имя таблицы или схемы')});
   const results=div('table-wrap catalog-grid');
-  const mysql=['mysql','mariadb'].includes(state.connection.engine);
+  const connection=state.connection;
+  const mysql=['mysql','mariadb'].includes(connection.engine);
   const canEdit=state.user.admin && mysql;
+  const canInsert=connection.engine!=='demo' && connection.level!=='view';
   const number=new Intl.NumberFormat(language);
+  const checked=new Set();
+  const onlySelected=field('onlySelected','checkbox','1');
+  const selectionStatus=e('small',{role:'status'});
+  const favoritesKey='abdb-favorites:'+state.user.name+':'+connection.id;
+  let favorites=new Set();
+  try {
+    const saved=JSON.parse(localStorage.getItem(favoritesKey) || '[]');
+    if (Array.isArray(saved)) favorites=new Set(saved.filter(value=>typeof value==='string'));
+  } catch {}
+  const favoriteOnly=field('favoriteOnly','checkbox','1');
+  const tableKey=([schema,name])=>JSON.stringify([schema,name]);
   const bytes=value=>{
     const n=Number(value);
     if (n>=1048576) return number.format(Math.round(n/104857.6)/10)+' MiB';
     if (n>=1024) return number.format(Math.round(n/102.4)/10)+' KiB';
     return number.format(n)+' B';
   };
+  function action(title,icon,fn,style='') {
+    return e('button',{type:'button',class:'catalog-action '+style,onclick:fn},
+      e('span',{'aria-hidden':'true',class:'catalog-icon'},icon),t(title));
+  }
+  async function change(table,operation) {
+    const path=route('structure-editor');
+    const input={operation,table:table[1]};
+    const preview=await api(path,'POST',{...input,preview:true});
+    if (state.connection?.id!==connection.id || state.view!=='structure') return;
+    openDialog(t('Предпросмотр изменений'),form([
+      e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' / '+table[0]+'.'+table[1]),
+      e('p',{},t('Вы точно хотите внести эти изменения?')),
+      e('p',{},t(operation==='truncate-table'?'Все строки будут удалены. Структура таблицы сохранится.':'Таблица и все её данные будут удалены.')),
+      e('pre',{class:'schema-sql'},preview.sql),
+    ],t('Подтвердить'),async ()=>{
+      await api(path,'POST',{...input,confirmation:preview.confirmation});
+      state.schema=null;
+      if (state.table?.[1]===table[1] && state.table?.[0]===table[0] && operation==='drop-table') state.table=null;
+      writeRoute(true);
+      dialog.close();
+      render();
+    }));
+  }
   function update() {
     const needle=search.value.trim().toLowerCase();
-    const visible=state.tables.filter(([schema,name])=>(schema+'.'+name).toLowerCase().includes(needle));
-    const headers=[t('Таблица'),t('Действия'),...(mysql?[t('Строки'),t('Движок таблицы'),t('Сравнение'),t('Размер'),t('Свободное место')]:[t('Схема'),t('Тип')])];
+    const visible=state.tables.filter(table=> {
+      const [schema,name]=table;
+      return (schema+'.'+name).toLowerCase().includes(needle) &&
+        (!onlySelected.checked || checked.has(tableKey(table))) && (!favoriteOnly.checked || favorites.has(tableKey(table)));
+    });
+    const selectAll=field('selectAll','checkbox','1',{'aria-label':t('Выбрать видимые таблицы'),
+      checked:visible.length>0 && visible.every(table=>checked.has(tableKey(table)))});
+    selectAll.indeterminate=visible.some(table=>checked.has(tableKey(table)))&&!selectAll.checked;
+    selectAll.addEventListener('change',()=>{
+      for (const table of visible) {
+        const key=tableKey(table);
+        if (selectAll.checked) checked.add(key); else checked.delete(key);
+      }
+      update();
+    });
+    const headers=[t('Таблица'),t('Действия'),...(mysql?[t('Строки'),t('Тип'),t('Сравнение'),t('Размер'),t('Фрагментация')]:[t('Схема'),t('Тип')])];
     results.replaceChildren(e('table',{class:'structure-grid'},
-      e('thead',{},e('tr',{},headers.map(title=>e('th',{scope:'col'},title)))),
+      e('thead',{},e('tr',{},e('th',{scope:'col',class:'catalog-choice'},selectAll),
+        headers.map(title=>e('th',{scope:'col'},title)))),
       e('tbody',{},visible.map(table=>{
         const [schema,name,type,rows,engine,collation,size,free]=table;
+        const key=tableKey(table);
+        const base=type==='BASE TABLE';
+        const selected=field('tableSelected','checkbox','1',{'aria-label':name,checked:checked.has(key)});
+        selected.addEventListener('change',()=>{if (selected.checked) checked.add(key);else checked.delete(key);update();});
+        const favorite=button(favorites.has(key)?'★':'☆',()=>{
+          if (favorites.has(key)) favorites.delete(key);else favorites.add(key);
+          try {localStorage.setItem(favoritesKey,JSON.stringify([...favorites]));} catch {}
+          update();
+        },'catalog-star',{'aria-label':t('Избранное')+' · '+name,'aria-pressed':String(favorites.has(key))});
         return e('tr',{},
-          e('td',{},button(name,()=>openWorkspaceTable(table),'table-link')),
-          e('td',{},div('row catalog-actions',
-            button(t('Обзор'),()=>openWorkspaceTable(table)),
-            canEdit && type==='BASE TABLE'?button(t('Структура'),()=>openWorkspaceTable(table,'schema-editor')):null)),
+          e('td',{class:'catalog-choice'},selected),
+          e('td',{class:'catalog-name'},button(name,()=>openWorkspaceTable(table),'table-link',{title:schema+'.'+name})),
+          e('td',{class:'catalog-action-cell'},div('row catalog-actions',favorite,
+            action('Обзор','▦',()=>openWorkspaceTable(table)),
+            canEdit && base?action('Структура','▤',()=>openWorkspaceTable(table,'schema-editor')):null,
+            action('Поиск по таблице','⌕',()=>openWorkspaceTable(table,'tables','filter')),
+            canInsert && base?action('Вставить','⊕',()=>openWorkspaceTable(table,'tables','insert')):null,
+            canEdit && base?action('Очистить','▱',click(()=>change(table,'truncate-table')),'catalog-danger'):null,
+            canEdit && base?action('Удалить','⊖',click(()=>change(table,'drop-table')),'catalog-danger'):null)),
           ...(mysql?[rows==null?'—':number.format(Number(rows)),engine ?? t('Представление БД'),collation ?? '—',
-            size==null?'—':bytes(size),Number(free)>0?bytes(free):'—']:[schema,type]).map(value=>e('td',{},value)));
+            size==null?'—':bytes(size),Number(free)>0?bytes(free):'—']:[schema,type]).map(value=>e('td',{class:'catalog-meta'},value)));
       }))));
+    selectionStatus.textContent=t('Выбрано таблиц: {count}',{count:checked.size});
     if (!visible.length) results.append(e('p',{},t('Подходящих таблиц нет.')));
   }
   search.addEventListener('input',update);
-  target.append(div('panel stack catalog-panel',
-    div('row spread',e('h2',{},t('Структура базы данных')),button(t('Обновить структуру'),()=>{state.schema=null;render();})),
-    label(t('Поиск таблиц'),search),results));
+  onlySelected.addEventListener('change',update);
+  favoriteOnly.addEventListener('change',update);
+  target.append(div('catalog-panel',
+    e('fieldset',{class:'catalog-filter'},e('legend',{},t('Фильтры')),
+      div('row',label(t('Содержит слово'),search),
+        e('label',{class:'check'},favoriteOnly,t('Только избранные')),
+        e('label',{class:'check'},onlySelected,t('Только выбранные')))),
+    results,div('row spread catalog-summary',selectionStatus,
+      button(t('Обновить структуру'),()=>{state.schema=null;render();}))));
   update();
 }
 
@@ -950,6 +1032,8 @@ async function loadTables(target,stamp,schemaReady) {
   if (state.view==='structure') {writeRoute(true);return databaseStructure(target);}
   if (!state.table) state.table=state.tables[0];
   writeRoute(true);
+  const initialAction=pendingTableAction;
+  pendingTableAction=null;
   const path = route('rows')+'?'+rowParams();
   let data;
   try { data = await api(path); }
@@ -1037,6 +1121,9 @@ async function loadTables(target,stamp,schemaReady) {
     observer.observe(footer);
   }
   stopRowLoading=()=>{observer?.disconnect();};
+  if (initialAction==='filter') filterDialog(data.columns);
+  if (initialAction==='insert' && editable) rowDialog(data,path);
+
   target.append(div('panel stack',e('h2',{},t('Столбцы')),resultTable({
     columns:[t('Имя'),t('Тип'),t('Допускает NULL'),t('Первичный ключ')],
     rows:data.definition.map(([name,type,nullable,key])=>[name,type,nullable==='YES'?t('Да'):t('Нет'),key?t('Да'):'']),

@@ -30,6 +30,7 @@ export function schemaStatement(database,input,definition) {
     }
     case 'rename-table': return 'RENAME TABLE '+table+' TO '+schema+'.'+quote(input.name);
     case 'drop-table': return 'DROP TABLE '+table;
+    case 'truncate-table': return 'TRUNCATE TABLE '+table;
     case 'add-column': return alter+'ADD COLUMN '+inputColumn(input.column);
     case 'modify-column': {
       inputColumn(input.column);

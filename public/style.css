@@ -151,3 +151,53 @@ dialog::backdrop{background:#163e4866}
   .schema-shell .connection-tree{display:grid}
   .table-tree-list{max-height:22dvh}
 }
+
+/* Compact database catalog and tree. */
+.catalog-shell{grid-template-columns:clamp(205px,16vw,270px) minmax(0,1fr);background:#fff}
+.catalog-shell .sidebar{background:#f1f3f4;border-right:3px solid #b9c4c6;padding:.75rem .6rem;gap:.65rem}
+.catalog-shell .brand{padding-inline:.45rem}
+.catalog-shell .connection-tree{gap:.12rem}
+.catalog-shell .connection-branch>button{border-radius:3px;padding:.35rem .45rem;font-size:.86rem}
+.catalog-shell .connection-branch>button[aria-current=true]{background:#d9e2e4;box-shadow:none}
+.catalog-shell .sidebar-tables{border-color:#aebbbd;margin-left:.55rem}
+.catalog-shell .sidebar-tables input{border-radius:2px;background:#fff;border-color:#a9b5b8}
+.catalog-shell .tree-table{border-radius:2px;text-align:left;padding:.28rem .35rem;color:#1f333b}
+.catalog-shell .tree-table::before{content:'▦';color:#49839a;margin-right:.36rem}
+.catalog-shell .table-tree-list{max-height:57dvh}
+.tree-create{font-size:.82rem;color:#145678}
+.catalog-shell .database-workspace{padding:0;gap:0}
+.catalog-shell .hero{display:flex;align-items:center;gap:.5rem;padding:.35rem .65rem;background:#5c6970;color:white}
+.catalog-shell .hero h1{font-size:.95rem;letter-spacing:0;font-weight:700}
+.catalog-shell .hero p{margin:0;color:#e8f5f6;font-size:.77rem}
+.catalog-shell .tabs{border-radius:0;border:0;border-bottom:1px solid #b9c4c6;padding:0;margin:0;gap:0;background:#ecf0f1}
+.catalog-shell .tabs button{border-radius:0;box-shadow:none;border-right:1px solid #bdc8cb;padding:.56rem .7rem;font-size:.8rem;color:#1b526c}
+.catalog-shell .tabs button[aria-current=true]{background:#fff}
+.catalog-panel{min-width:0;padding:.55rem .5rem;background:#fff}
+.catalog-filter{margin:0 0 .2rem;padding:.35rem .65rem .55rem;background:#eef0f1;border:1px solid #b9c4c6}
+.catalog-filter legend{padding:.23rem .5rem;background:white;border:1px solid #b9c4c6;color:#263e47;font-size:.85rem;font-weight:700}
+.catalog-filter label{display:flex;align-items:center;gap:.48rem;font-weight:500}
+.catalog-filter input[type=search]{width:clamp(8rem,24vw,20rem);padding:.3rem .45rem;border-radius:2px;background:#fff;border-color:#aebabe}
+.catalog-grid{max-height:none;overflow:auto}
+.structure-grid{width:max-content;min-width:100%;font-size:.825rem}
+.structure-grid th,.structure-grid td{border-bottom:1px solid #fff;min-width:0;max-width:none;padding:.25rem .48rem;white-space:nowrap}
+.structure-grid th{border-radius:0!important;background:linear-gradient(#f5f6f7,#d1d6d8);color:#24546d}
+.structure-grid th:nth-child(2),.structure-grid td:nth-child(2){min-width:9rem}
+.structure-grid tbody tr:nth-child(even){background:#e2e6e8}
+.structure-grid tbody tr:hover{background:#cddfe7}
+.structure-grid .catalog-choice{width:1.7rem;text-align:center}
+.structure-grid input[type=checkbox]{width:.85rem;height:.85rem;margin:0;vertical-align:middle}
+.structure-grid .table-link{font-weight:750;color:#185675;font-size:inherit;padding:0}
+.structure-grid .catalog-actions{gap:.36rem;flex-wrap:nowrap}
+.structure-grid .catalog-action,.structure-grid .catalog-star{padding:.03rem .1rem;background:transparent;color:#185675;font-size:inherit;font-weight:500}
+.structure-grid .catalog-action:hover,.structure-grid .table-link:hover{text-decoration:underline}
+.structure-grid .catalog-icon{color:#488198;font-weight:700;margin-right:.2rem}
+.structure-grid .catalog-danger .catalog-icon{color:#ab4e4e}
+.structure-grid .catalog-star{color:#7b6b2a;font-size:1rem}
+.structure-grid .catalog-meta:nth-child(4),.structure-grid .catalog-meta:nth-last-child(-n+2){text-align:right;font-variant-numeric:tabular-nums}
+.catalog-summary{padding:.35rem .45rem;background:#eef0f1}
+.catalog-summary button{padding:.28rem .5rem;font-size:.76rem}
+@media (max-width:740px){
+  .catalog-shell{grid-template-columns:1fr}
+  .catalog-shell .sidebar{border-right:0;border-bottom:2px solid #b9c4c6}
+  .catalog-shell .table-tree-list{max-height:25dvh}
+}

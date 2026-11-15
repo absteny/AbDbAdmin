@@ -124,7 +124,11 @@ from the Docker host on the database side.
 Select a connection to expand its table list in the left sidebar and open
 the table catalog on the right. On MySQL and MariaDB, the catalog includes
 storage engine, collation, size, and row counts reported by the server.
-Select a table on either side to browse its rows on the right.
+Select a table on either side to browse its rows on the right. The catalog
+provides a filter bar, favorites, selection, and direct Browse and Search
+actions. For eligible tables, Insert opens the row editor. On MySQL and
+MariaDB, administrators can also open Structure, Empty, or Drop. Empty and
+Drop show the exact statement and require confirmation.
 
 Browsing starts with primary-key columns in descending order. If there is no
 primary key, the default uses the first supported sortable column, when

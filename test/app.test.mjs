@@ -314,6 +314,11 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       await change({operation:'change-engine',table,engine:'MyISAM'});
       assert.equal((await request(editor+'?table='+table,'GET',undefined,admin)).body.engine,'MyISAM');
       await change({operation:'change-engine',table,engine:'InnoDB'});
+      const empty={operation:'truncate-table',table};
+      await request(editor,'POST',empty,admin,409);
+      assert.equal((await withDatabase(profile,db=>db.query('SELECT id FROM clay_editor_test'))).rows.length,1);
+      await change(empty);
+      assert.deepEqual((await withDatabase(profile,db=>db.query('SELECT id FROM clay_editor_test'))).rows,[]);
       await change({operation:'rename-table',table,name:table+'_renamed'});
       await change({operation:'drop-table',table:table+'_renamed'});
     }
