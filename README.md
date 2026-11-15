@@ -119,6 +119,20 @@ on the same Docker network and use the database service name. For a database
 on a separate machine, enter its reachable address and allow connections
 from the Docker host on the database side.
 
+### Browse a database
+
+Select a connection to expand its table list in the left sidebar and open
+the table catalog on the right. On MySQL and MariaDB, the catalog includes
+storage engine, collation, size, and row counts reported by the server.
+Select a table on either side to browse its rows on the right.
+
+Browsing starts with primary-key columns in descending order. If there is no
+primary key, the default uses the first supported sortable column, when
+available. Set a sort explicitly in **Filters and sorting** to override it.
+The row grid loads the next 50 rows as you scroll down. **Load more** is
+available for manual loading or retry. Offset-based browsing can shift
+when rows change while you are scrolling.
+
 ### Filter rows and save a view
 
 Open a table and select **Filters and sorting**. Add up to eight conditions
@@ -381,8 +395,7 @@ Stop the former instance first.
 
 ## Limits and development
 
-The browser lists up to 500 database objects, displays 120 in the 3D schema,
-and loads 50 rows per page. A CSV export contains up to 500 rows from the
+The 3D schema displays up to 120 database objects. The data grid loads 50 rows at a time. A CSV export contains up to 500 rows from the
 current offset. SQL returns up to 200 rows from the first result set. Long
 values are abbreviated and binary values are represented by size. Use native
 database tools for full exports or backups.

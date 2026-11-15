@@ -663,7 +663,7 @@ async function api(req, res, url, event) {
         }
       }
       if (action === 'schema' && method === 'GET') {
-        return demo ? demoStructure() : remote(profile,async db=>({tables:await structure(db),relations:await relations(db)}));
+        return demo ? demoStructure() : remote(profile,async db=>({tables:await structure(db,{catalog:true}),relations:await relations(db)}));
       }
       if (action === 'sql' && method === 'POST') {
         requireValue(!demo && ['sql','admin'].includes(record.level),'Нет доступа к SQL',403);

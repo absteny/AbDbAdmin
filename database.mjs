@@ -138,10 +138,12 @@ export async function withDatabase(profile, fn, {scripts=false}={}) {
   }
 }
 
-export async function structure({query, pg}) {
+export async function structure({query, pg}, {catalog=false}={}) {
   const {rows} = await query(
-    `SELECT table_schema, table_name, table_type FROM information_schema.tables
-     WHERE ${scope(pg)} ORDER BY table_schema, table_name LIMIT 500`);
+    `SELECT table_schema, table_name, table_type${catalog && !pg
+      ? ', TABLE_ROWS, ENGINE, TABLE_COLLATION, COALESCE(DATA_LENGTH,0)+COALESCE(INDEX_LENGTH,0), DATA_FREE' : ''}
+     FROM information_schema.tables WHERE ${scope(pg)}
+     ORDER BY table_schema, table_name${catalog?'':' LIMIT 500'}`);
   return rows;
 }
 

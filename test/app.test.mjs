@@ -114,7 +114,7 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
   assert.equal(sampleSchema.tables.length,4);
   assert.ok(sampleSchema.relations.some(edge=>edge.join('.')==='store.orders.store.customers'));
   const orders = demo+'/rows?schema=store&table=orders';
-  assert.deepEqual((await request(orders,'GET',undefined,reader)).body.rows[0],[101,1,'paid']);
+  assert.deepEqual((await request(orders,'GET',undefined,reader)).body.rows[0],[103,1,'shipped']);
   const criteria={filters:[{column:'status',operator:'contains',value:'PA'}],sort:{column:'id',direction:'desc'}};
   const filtered=orders+'&filter='+encodeURIComponent(JSON.stringify(criteria));
   assert.deepEqual((await request(filtered,'GET',undefined,reader)).body.rows,[[101,1,'paid']]);
@@ -128,7 +128,7 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
   await request(views+'&id='+stored[0].id,'DELETE',undefined,reader);
   assert.deepEqual((await request(views,'GET',undefined,reader)).body,[]);
   const {body:customers} = await request(demo+'/rows?schema=store&table=customers','GET',undefined,reader);
-  assert.deepEqual(customers.rows[0],[1,'Northwind Workshop']);
+  assert.deepEqual(customers.rows[0],[3,'Cedar Lab']);
   const row = {action:'update',key:{id:101},values:{status:'secret-row-marker'}};
   await request(orders,'POST',row,reader,403);
   await request(orders,'POST',row,admin,403);
@@ -327,6 +327,17 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
     assert.deepEqual(structure.relations.find(edge=>edge[1]==='clay_child'),[schema,'clay_child',schema,'clay_parent']);
     const page = (await request(rows,'GET',undefined,reader)).body;
     assert.deepEqual(page.rows,[[1,'original']]);
+    await withDatabase(profile,async db=>{
+      for (let i=2;i<=61;i++) await db.query('INSERT INTO clay_parent(id,label) VALUES ('+i+",'page')");
+    });
+    const firstPage=(await request(rows,'GET',undefined,reader)).body;
+    const secondPage=(await request(rows+'&offset=50','GET',undefined,reader)).body;
+    assert.equal(firstPage.truncated,true);
+    assert.equal(secondPage.truncated,false);
+    assert.deepEqual([...firstPage.rows,...secondPage.rows].map(row=>row[0]),Array.from({length:61},(_,i)=>61-i));
+    const ascending=rows+'&filter='+encodeURIComponent(JSON.stringify({filters:[],sort:{column:'id',direction:'asc'}}));
+    assert.equal((await request(ascending,'GET',undefined,reader)).body.rows[0][0],1);
+    await withDatabase(profile,db=>db.query('DELETE FROM clay_parent WHERE id>1'));
     assert.ok(page.definition[0][3]);
     assert.match((await request(csv,'GET',undefined,reader)).body,/"1","original"/);
     await request(rows,'POST',{action:'update',key:{id:1},values:{label:'changed'}},reader,403);

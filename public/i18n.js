@@ -1,4 +1,12 @@
 const english = {
+  "Фильтр таблиц слева": "Filter sidebar tables",
+  "Строки": "Rows",
+  "Сравнение": "Collation",
+  "Размер": "Size",
+  "Свободное место": "Free space",
+  "Загрузить ещё": "Load more",
+  "Структура изменилась. Обновите таблицу.": "The table structure changed. Refresh the table."
+,
   "Изменить команду события": "Replace event statement",
   "Изменение команды события": "Event statement change",
   "Интервал": "Interval",
