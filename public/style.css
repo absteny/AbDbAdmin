@@ -111,3 +111,18 @@ dialog::backdrop{background:#163e4866}
 }
 
 .network{padding:.9rem 1rem;border:1px solid var(--line);border-radius:14px;background:#e5f4f1;gap:.5rem;overflow-wrap:anywhere}
+
+.database-workspace{max-width:none;gap:.85rem}
+.database-workspace .hero{padding:1rem 0 .4rem}
+.database-workspace .hero h1{font-size:clamp(1.55rem,4vw,2.25rem)}
+.database-workspace .tabs{gap:.25rem;padding:.32rem;background:#d5eae9;border:1px solid var(--line);border-radius:12px}
+.database-workspace .tabs button:not([aria-current=true]){background:transparent}
+.database-workspace .panel{border-radius:13px}
+.structure-grid tbody tr:nth-child(even){background:#eaf6f5}
+.structure-grid tbody td{padding:.4rem .65rem}
+.structure-grid button{padding:.35rem .65rem}
+.structure-grid .table-link{background:transparent;color:var(--accent);padding-inline:0;text-align:left}
+.connection-details dt{font-weight:650}
+.connection-details dd{margin:0;overflow-wrap:anywhere}
+.connection-details .row{margin-block:.45rem}
+.workspace-link{display:inline-block;justify-self:start;padding:.6rem .85rem;border-radius:10px;background:#d7eeee;font-weight:650}

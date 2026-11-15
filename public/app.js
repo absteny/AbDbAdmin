@@ -133,7 +133,7 @@ async function refreshConnections() {
 }
 async function choose(id) {
   state.connection = state.connections.find(item=>item.id===id);
-  Object.assign(state,{view:'tables',schema:null,tables:[],relations:[],table:null,offset:0});
+  Object.assign(state,{view:'structure',schema:null,tables:[],relations:[],table:null,offset:0});
   render();
 }
 function setView(view) { state.view=view; render(); }
@@ -152,6 +152,7 @@ function render() {
   const utility = Object.hasOwn(pages,state.view);
   const people = state.view === 'users';
   const demo = active?.engine === 'demo';
+  const mysqlWorkspace = active && ['mysql','mariadb'].includes(active.engine);
   const engine = active && t(labelKeys[active.engine] ?? active.engine);
   const content = div('stack');
   const heading = div('hero',e('h1',{},utility?t(pages[state.view]):active?.name || t('Подключения')),
@@ -170,10 +171,11 @@ function render() {
     div('stack',languagePicker(),e('small',{},state.user.name),button(t('Сменить пароль'),changePassword),button(t('Выйти'),click(async()=>{
       await api('logout','POST');tableViews.clear();state.user=null;login();
     }))),
-  ),e('main',{class:'main stack'},heading,
+  ),e('main',{class:active && !utility?'main stack database-workspace':'main stack'},heading,
     active && !utility ? div('row tabs',
-      ...[['tables',t('Таблицы')],['graph',t('3D-схема')],...(!demo && ['admin','sql'].includes(active.level)?[['sql','SQL']]:[])]
+      ...[['structure',t('Структура')],['tables',t('Обзор')],['graph',t('3D-схема')],...(!demo && ['admin','sql'].includes(active.level)?[['sql','SQL']]:[])]
         .map(([key,title])=>button(title,()=>setView(key),null,{'aria-current':String(state.view===key)})),
+      admin && mysqlWorkspace?button('phpMyAdmin',()=>setView('advanced'),null,{'aria-current':String(state.view==='advanced')}):null,
       admin && !demo?button(t('Настройки'),click(async()=>editConnection(await api(route('settings')),active.id))):null,
     ):null,content)));
   if (state.view==='demo') return demoView(content);
@@ -186,6 +188,7 @@ function render() {
     return;
   }
   if (state.view === 'sql') return sqlView(content);
+  if (state.view === 'advanced' && admin && mysqlWorkspace) return advancedWorkspace(content,stamp).catch(error=>showError(content,stamp,error));
   loadTables(content,stamp).catch(error=>showError(content,stamp,error));
 }
 function showError(target, stamp, error) {
@@ -215,7 +218,7 @@ function editConnection(config={}, id=null) {
     label(t('Название'),field('name','text',config.name,{required:true,maxlength:255}),'wide'),
     label(t('СУБД'),engine),
     label(t('Порт'),port),
-    e('label',{class:'check wide'},field('production','checkbox','1',{checked:config.production}),t('Рабочая база (production)')),
+    e('label',{class:'check wide'},field('production','checkbox','1',{checked:config.production}),t('Рабочая база (production)'),e('small',{},t('Показывает предупреждение при работе с реальными данными. Права доступа задаются отдельно.'))),
     label(t('Хост'),field('host','text',config.host,{required:true,placeholder:'db.example.net'})),
     label(t('База данных'),field('database','text',config.database,{required:true})),
     label(t('Пользователь БД'),field('user','text',config.user,{required:true})),
@@ -347,6 +350,54 @@ function demoView(target) {
   ));
 }
 
+async function advancedWorkspace(target,stamp) {
+  if (!state.user.advancedUrl) {
+    target.append(div('panel stack',e('h2',{},'phpMyAdmin'),
+      e('p',{},t('Запустите расширенный локальный режим, чтобы открыть phpMyAdmin.')),
+      e('code',{},'PowerShell: .\\install.ps1 -Advanced'),
+      e('code',{},'Linux / macOS: sh install.sh --local --advanced')));
+    return;
+  }
+  target.append(div('panel',t('Загрузка…')));
+  const config=await api(route('settings'));
+  if (stamp!==renderId) return;
+  target.replaceChildren(div('panel stack',
+    e('h2',{},'phpMyAdmin'),
+    e('p',{},t('Войдите в phpMyAdmin под учётной записью сервера БД и выберите указанную базу. Перед изменениями проверьте сервер и базу в открывшейся вкладке.')),
+    e('dl',{class:'connection-details'},[
+      [t('Хост'),config.host+':'+config.port],
+      [t('База данных'),config.database],
+      [t('Пользователь БД'),config.user],
+    ].map(([title,value])=>div('row',e('dt',{},title),e('dd',{},value)))),
+    e('p',{},t('В phpMyAdmin доступны импорт, экспорт, управление структурой, пользователями БД, процедурами и триггерами.')),
+    e('a',{href:state.user.advancedUrl,target:'_blank',rel:'noopener noreferrer',class:'workspace-link'},t('Открыть phpMyAdmin')),
+  ));
+}
+
+function databaseStructure(target) {
+  const search=e('input',{type:'search',placeholder:t('Имя таблицы или схемы')});
+  const results=div('table-wrap');
+  function update() {
+    const needle=search.value.trim().toLowerCase();
+    const visible=state.tables.filter(([schema,name])=>(schema+'.'+name).toLowerCase().includes(needle));
+    const open=table=>{state.table=table;state.offset=0;setView('tables');};
+    results.replaceChildren(e('table',{class:'structure-grid'},
+      e('thead',{},e('tr',{},[t('Таблица'),t('Схема'),t('Тип'),t('Действия')].map(title=>e('th',{scope:'col'},title)))),
+      e('tbody',{},visible.map(table=>e('tr',{},
+        e('td',{},button(table[1],()=>open(table),'table-link')),
+        e('td',{},table[0]),
+        e('td',{},table[2]==='BASE TABLE'?t('Таблица'):table[2]==='VIEW'?t('Представление БД'):table[2]),
+        e('td',{},button(t('Обзор'),()=>open(table))),
+      )))));
+    if (!visible.length) results.append(e('p',{},t('Подходящих таблиц нет.')));
+  }
+  search.addEventListener('input',update);
+  target.append(div('panel stack',
+    div('row spread',e('h2',{},t('Структура базы данных')),button(t('Обновить структуру'),()=>{state.schema=null;render();})),
+    label(t('Поиск таблиц'),search),results));
+  update();
+}
+
 async function loadTables(target,stamp) {
   target.append(div('panel',t('Загрузка структуры…')));
   if (!state.schema) {
@@ -361,6 +412,7 @@ async function loadTables(target,stamp) {
     return;
   }
   if (state.view==='graph') return graph(target);
+  if (state.view==='structure') return databaseStructure(target);
   if (!state.table) state.table=state.tables[0];
   const selection = select('table',state.tables.map((entry,index)=>[String(index),entry[0]+'.'+entry[1]]),String(state.tables.indexOf(state.table)),{
     onchange:event=>{state.table=state.tables[Number(event.target.value)];state.offset=0;render();},

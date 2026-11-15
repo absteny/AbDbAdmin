@@ -1,4 +1,16 @@
 const english = {
+  "Структура": "Structure",
+  "Обзор": "Browse",
+  "Схема": "Schema",
+  "Представление БД": "Database view",
+  "Подходящих таблиц нет.": "No matching tables.",
+  "Структура базы данных": "Database structure",
+  "Показывает предупреждение при работе с реальными данными. Права доступа задаются отдельно.": "Shows a warning when working with live data. Access permissions are configured separately.",
+  "Запустите расширенный локальный режим, чтобы открыть phpMyAdmin.": "Start advanced local mode to open phpMyAdmin.",
+  "Войдите в phpMyAdmin под учётной записью сервера БД и выберите указанную базу. Перед изменениями проверьте сервер и базу в открывшейся вкладке.": "Sign in to phpMyAdmin with your database account and select the database below. Verify the server and database in the new tab before making changes.",
+  "В phpMyAdmin доступны импорт, экспорт, управление структурой, пользователями БД, процедурами и триггерами.": "Use phpMyAdmin for import, export, schema management, database accounts, routines, and triggers.",
+  "Открыть phpMyAdmin": "Open phpMyAdmin"
+,
   "MySQL или MariaDB отклонила вход. Проверьте пароль и разрешённый хост учётной записи на сервере БД.": "MySQL or MariaDB rejected the login. Check the password and the hosts allowed for this account on the database server.",
   "Сервер БД не разрешает подключения с этого хоста.": "The database server does not allow connections from this host.",
   "Учётной записи не выдан доступ к выбранной базе данных.": "This account does not have access to the selected database.",
