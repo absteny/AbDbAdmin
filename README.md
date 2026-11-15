@@ -34,8 +34,37 @@ to AbDbAdmin. It can still connect to a database on another machine.
 
 ### Windows PowerShell
 
-Start Docker Desktop. For a new installation, clone the repository into a
-folder you own, or download and extract the complete repository ZIP.
+Run the commands below one at a time in Windows PowerShell.
+
+#### Install Windows prerequisites
+
+- **WSL 2**. If Docker Desktop reports that WSL is missing, open PowerShell
+  as Administrator and run:
+
+  ```powershell
+  wsl --install --no-distribution
+  ```
+
+  Restart Windows after installation. Docker Desktop can use WSL 2 without
+  a separate Linux distribution. See the [Microsoft WSL guide](https://learn.microsoft.com/windows/wsl/install)
+  and the [Docker WSL 2 guide](https://docs.docker.com/desktop/features/wsl/).
+- **Docker Desktop**. If Docker Desktop is missing, install it using the
+  [official Windows installer](https://docs.docker.com/desktop/setup/install/windows-install/)
+  and use the WSL 2 backend. Start Docker Desktop and run `docker version`.
+  Continue once the output includes a **Server** section. Docker Engine 28
+  or newer is required for local-only mode.
+- **Git for Windows**. If `git --version` fails, install Git:
+
+  ```powershell
+  winget install --id Git.Git --exact --source winget
+  ```
+
+  Close PowerShell, open a new window and check `git --version` again.
+  If WinGet is unavailable, use the [Git for Windows installer](https://git-scm.com/install/windows).
+
+#### Clone and start AbDbAdmin
+
+For a new installation, clone the repository into a folder you own.
 
 ```powershell
 Set-Location $HOME
