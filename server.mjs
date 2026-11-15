@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
 import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount, objectCommand } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes, tableEngines, postgresColumnTypes, postgresTableDefinition, postgresColumnStatement, postgresColumnEdit, mysqlTypeFamilies } from './schema-editor.mjs';
-import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
+import { withDatabase, getSshFingerprint, structure, relations, tableData, columns, identifier } from './database.mjs';
 
 process.umask(0o077);
 const dataDir = process.env.DATA_DIR || './data';
@@ -220,6 +220,11 @@ function loginLimit(req) {
   ip.count++;
   rates.set(index, ip);
 }
+function validSshEndpoint(host,port) {
+  return typeof host==='string' && host.length>0 && host.length<=255 &&
+    (/^[a-z0-9_.-]+$/i.test(host) || isIP(host)===6) && Number.isInteger(port) && port>0 && port<=65535;
+}
+
 function sshConfiguration(input,previous) {
   if (input===null || input===undefined) return input===null?null:previous ?? null;
   requireValue(typeof input==='object' && !Array.isArray(input),'Проверьте настройки SSH');
@@ -228,8 +233,7 @@ function sshConfiguration(input,previous) {
   const passphrase=input.passphrase ?? (input.privateKey===undefined?previous?.passphrase:undefined) ?? '';
   const fingerprintBytes=typeof fingerprint==='string' && /^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)
     ?Buffer.from(fingerprint.slice(7),'base64'):null;
-  requireValue(typeof host==='string' && host.length<=255 && host.length>0 &&
-    (/^[a-z0-9_.-]+$/i.test(host) || isIP(host)===6) && Number.isInteger(port) && port>0 && port<=65535 &&
+  requireValue(validSshEndpoint(host,port) &&
     typeof user==='string' && /^[a-z0-9_.@-]{1,128}$/i.test(user) &&
     fingerprintBytes && fingerprintBytes.toString('base64').replace(/=$/,'')===fingerprint.slice(7) &&
     typeof privateKey==='string' && privateKey.trim().length>0 && privateKey.length<=32768 &&
@@ -246,7 +250,7 @@ function configuration(input, previous) {
   requireValue(typeof password === 'string' && password.length <= 4096 && typeof ca === 'string' && ca.length <= 32768);
   requireValue(engine!=='postgres' || !input.ssh,'SSH доступен для MySQL и MariaDB');
   const ssh=engine==='postgres'?null:sshConfiguration(input.ssh,previous?.ssh);
-  return {name:name.trim(), engine, host, port, user, database, password, tls, ca,...(ssh?{ssh}:{}), production:input.production===undefined ? Boolean(previous?.production) : input.production===true};
+  return {name:name.trim(), engine, host, port, user, database, password, tls, ca,...(ssh?{ssh}:{}), production:true};
 }
 function access(user, id) {
   const record = user.admin
@@ -256,7 +260,7 @@ function access(user, id) {
   return record;
 }
 function publicProfile({password,ca,ssh,...rest}) {
-  return {...rest,customCa:Boolean(ca),ssh:ssh?{
+  return {...rest,production:true,customCa:Boolean(ca),ssh:ssh?{
     host:ssh.host,port:ssh.port,user:ssh.user,fingerprint:ssh.fingerprint,
     hasKey:Boolean(ssh.privateKey),hasPassphrase:Boolean(ssh.passphrase),
   }:null};
@@ -559,6 +563,18 @@ async function api(req, res, url, event) {
   const user = session && database.prepare('SELECT u.id,u.name,u.admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>?').get(digest(session),Date.now());
   requireValue(user,'Войдите в панель',401);
   event.actor = user.name;
+  if (resource==='ssh-fingerprint' && method==='POST') {
+    requireValue(user.admin,'Требуются права администратора',403);
+    const {host,port}=await body(req);
+    requireValue(validSshEndpoint(host,port),'Проверьте настройки SSH');
+    requireValue(active<12,'Слишком много одновременных запросов',503);
+    active++;
+    try {return {fingerprint:await getSshFingerprint({host,port})};}
+    catch (error) {
+      throw new RequestError(502,error.code==='SSH_TIMEOUT'?'SSH-сервер или туннель не ответил вовремя.':
+        'Не удалось подключиться к SSH-серверу. Проверьте адрес и порт.');
+    } finally {active--;}
+  }
   if (resource === 'connection-test' && method === 'POST') {
     requireValue(user.admin,'Требуются права администратора',403);
     const input=await body(req);
@@ -700,9 +716,9 @@ async function api(req, res, url, event) {
     if (action==='rows' && method==='POST') event.action = 'row.write';
     if (action==='csv' && method==='GET') event.action = 'csv.export';
     if (!id && method === 'GET') {
-      const entries = user.admin ? database.prepare("SELECT id,name,engine,secret,'admin' AS level FROM connections WHERE engine<>'demo' ORDER BY name").all()
-        : database.prepare('SELECT c.id,c.name,c.engine,c.secret,p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE p.user_id=? AND c.engine<>? ORDER BY c.name').all(user.id,'demo');
-      return entries.map(({secret,...entry})=>({...entry,production:Boolean(reveal(secret).production)}));
+      const entries = user.admin ? database.prepare("SELECT id,name,engine,'admin' AS level FROM connections WHERE engine<>'demo' ORDER BY name").all()
+        : database.prepare('SELECT c.id,c.name,c.engine,p.level FROM connections c JOIN permissions p ON p.connection_id=c.id WHERE p.user_id=? AND c.engine<>? ORDER BY c.name').all(user.id,'demo');
+      return entries.map(entry=>({...entry,production:true}));
     }
     if (!id && method === 'POST') {
       requireValue(user.admin,'Требуются права администратора',403);

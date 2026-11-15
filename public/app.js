@@ -66,6 +66,7 @@ function requestTitle(path,method) {
   if (endpoint==='schema' || endpoint==='structure-editor' && method==='GET') return 'Загрузка структуры…';
   if (endpoint==='rows' && method==='GET') return 'Загружаем строки…';
   if (endpoint==='sql' || endpoint==='sql-script') return 'Обрабатываем SQL…';
+  if (endpoint==='ssh-fingerprint') return 'Получаем отпечаток SSH…';
   if (endpoint==='connection-test') return 'Проверяем подключение…';
   if (method!=='GET') return 'Выполняем запрос…';
   return 'Загрузка…';
@@ -275,7 +276,7 @@ function render() {
   const schemaReady=workspace?loadWorkspaceSchema(active.id,stamp,tableSidebar):null;
   const browsedTable=state.view==='tables' && (pendingTable ?? state.table);
   const heading = div('hero',e('h1',{},browsedTable?t('Таблица')+' · '+browsedTable[1]:utility?t(pages[state.view]):active?.name || t('Подключения')),
-    active && !utility ? e('p',{},(browsedTable?active.name+' / '+browsedTable[0]+' · ':'')+engine+' · '+t(labelKeys[active.level])+(active.production?' · PRODUCTION':'')) : null);
+    active && !utility ? e('p',{},(browsedTable?active.name+' / '+browsedTable[0]+' · ':'')+engine+' · '+t(labelKeys[active.level])+' · PRODUCTION') : null);
   app.replaceChildren(div(workspace?'shell schema-shell':'shell',div('sidebar',
     brand(),
     div('row spread',e('span',{class:'nav-heading'},t('Подключения')),admin?button('+',()=>editConnection(), 'primary',{'aria-label':t('Добавить подключение')}):null),
@@ -342,6 +343,18 @@ function editConnection(config={}, id=null) {
   const sshPort=field(undefined,'number',savedSsh?.port ?? 22,{required:true,min:1,max:65535});
   const sshUser=field(undefined,'text',savedSsh?.user ?? '',{required:true,maxlength:128});
   const fingerprint=field(undefined,'text',savedSsh?.fingerprint ?? '',{required:true,maxlength:50,placeholder:'SHA256:…'});
+  const observedFingerprint=div('stack wide');
+  function clearObservedFingerprint() {observedFingerprint.replaceChildren();}
+  for (const control of [sshHost,sshPort]) control.addEventListener('input',clearObservedFingerprint);
+  const lookup=button(t('Получить отпечаток'),click(async()=>{
+    if (!sshHost.reportValidity() || !sshPort.reportValidity()) return;
+    const host=sshHost.value.trim(),port=Number(sshPort.value);
+    const {fingerprint:observed}=await api('ssh-fingerprint','POST',{host,port});
+    if (!observedFingerprint.isConnected || sshHost.value.trim()!==host || Number(sshPort.value)!==port) return;
+    observedFingerprint.replaceChildren(e('code',{},observed),
+      e('small',{},t('Сверьте отпечаток с данными администратора или с консолью SSH-сервера.')),
+      button(t('Использовать проверенный отпечаток'),()=>{fingerprint.value=observed;clearObservedFingerprint();}));
+  }));
   const keyFile=field(undefined,'file');
   const keyText=e('textarea',{maxlength:32768,autocomplete:'off',spellcheck:'false',
     placeholder:savedSsh?.hasKey?t('Сохранённый SSH-ключ'):null});
@@ -380,7 +393,8 @@ function editConnection(config={}, id=null) {
     e('legend',{},'SSH'),
     div('fields',label(t('Хост SSH'),sshHost),label(t('Порт SSH'),sshPort),label(t('Пользователь SSH'),sshUser),
       label(t('Отпечаток ключа SSH-сервера'),fingerprint),
-      e('small',{class:'wide'},t('Укажите SHA256-отпечаток, полученный у администратора SSH-сервера.')),
+      div('row wide',lookup,e('small',{},t('Укажите SHA256-отпечаток, полученный у администратора SSH-сервера.'))),
+      observedFingerprint,
       label(t('Загрузить файл приватного ключа'),keyFile,'wide'),keyStatus,
       label(t('Или вставить приватный SSH-ключ'),keyText,'wide'),
       label(t('Парольная фраза SSH-ключа'),passphrase,'wide'),
@@ -408,7 +422,6 @@ function editConnection(config={}, id=null) {
     label(t('Название'),field('name','text',config.name,{required:true,maxlength:255}),'wide'),
     label(t('СУБД'),engine),
     label(t('Порт'),port),
-    e('label',{class:'check wide'},field('production','checkbox','1',{checked:config.production}),t('Рабочая база (production)'),e('small',{},t('Показывает предупреждение при работе с реальными данными. Права доступа задаются отдельно.'))),
     label(t('Хост'),targetHost),
     label(t('База данных'),field('database','text',config.database,{required:true})),
     label(t('Пользователь БД'),field('user','text',config.user,{required:true})),
@@ -423,7 +436,6 @@ function editConnection(config={}, id=null) {
     observed.textContent=t('Пока неизвестен');
     data.port=Number(data.port);
     data.tls=Boolean(data.tls);
-    data.production=Boolean(data.production);
     data.ssh=null;
     if (!sshFields.disabled) {
       await keyLoad;
@@ -604,7 +616,7 @@ function scriptsView(target,stamp) {
       const preview=await api(path,'POST',{sql});
       if (stamp!==renderId) return;
       openDialog(t('Предпросмотр изменений'),form([
-        e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' / '+preview.database),
+        e('strong',{},'PRODUCTION · '+connection.name+' / '+preview.database),
         e('pre',{class:'schema-sql'},sql.slice(0,8192)),
         sql.length>8192?e('small',{},t('В предпросмотре показано начало скрипта.')):null,
         e('p',{},warning),
@@ -626,7 +638,7 @@ function maintenanceDialog() {
   const commands=[['CHECK',t('Проверить')],['ANALYZE',t('Обновить статистику')],['OPTIMIZE',t('Оптимизировать')]];
   const result=div('stack');
   openDialog(t('Обслуживание таблицы'),form([
-    e('strong',{},(state.connection.production?'PRODUCTION · ':'')+target),
+    e('strong',{},'PRODUCTION · '+target),
     e('p',{},t('Обслуживание может занять время и заблокировать таблицу.')),
     label(t('Действие'),select('operation',commands,'CHECK')),result,
   ],t('Выполнить'),async ({operation})=>{
@@ -810,7 +822,7 @@ async function databaseObjectsView(target,stamp) {
       const preview=await api(changePath,'POST',{...input,preview:true});
       if (stamp!==renderId) return;
       openDialog(t('Предпросмотр изменений'),form([
-        e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' / '+preview.database),
+        e('strong',{},'PRODUCTION · '+connection.name+' / '+preview.database),
         e('p',{},t('Вы точно хотите внести эти изменения?')),
         e('pre',{class:'schema-sql'},preview.sql),
       ],t('Подтвердить'),async ()=>{
@@ -876,7 +888,7 @@ function openCsvImport() {
   const path=route('csv-import');
   const file=field('file','file',undefined,{required:true,accept:'.csv,text/csv'});
   const editor=form([
-    e('strong',{},(state.connection.production?'PRODUCTION · ':'')+target),
+    e('strong',{},'PRODUCTION · '+target),
     e('p',{},t('CSV в UTF-8 с заголовками столбцов и разделителем-запятой. До 200 строк и 64 КБ.')),
     label(t('CSV-файл'),file),
   ],t('Предпросмотр изменений'),async ()=>{
@@ -989,7 +1001,7 @@ async function schemaEditor(target,stamp) {
       const input=makeInput(values);
       const preview=await api(path,'POST',{...input,preview:true});
       openDialog(t('Предпросмотр изменений'),form([
-        e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' / '+settings.database),
+        e('strong',{},'PRODUCTION · '+connection.name+' / '+settings.database),
         e('p',{},t('Вы точно хотите внести эти изменения?')),
         e('pre',{class:'schema-sql'},preview.sql),
         input.engine==='MyISAM'?e('p',{},t('MyISAM не поддерживает транзакции и внешние ключи.')):null,
@@ -1186,7 +1198,7 @@ function databaseStructure(target) {
     const title=bulkChoices.find(([key])=>key===operation)[1];
     const result=div('stack');
     const review=form([
-      e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name+' · '+title),
+      e('strong',{},'PRODUCTION · '+connection.name+' · '+title),
       e('p',{},t('Вы точно хотите внести эти изменения?')),
       e('p',{},selected.map(table=>table[1]).join(', ')),
       destructive?e('p',{},t('Действия выполняются по очереди. При ошибке предыдущие изменения могут сохраниться.')):null,
@@ -1735,9 +1747,8 @@ function rowDialog(data,path,row) {
       name,row ? original.get(name) : '—',
       action==='delete' ? '—' : Object.hasOwn(values,name) ? values[name] : t('По умолчанию'),
     ]);
-    const production=state.connection.production;
     openDialog(t('Предпросмотр изменений'),form([
-      e('strong',{},(production?'PRODUCTION · ':'')+target),
+      e('strong',{},'PRODUCTION · '+target),
       e('p',{},t('Вы точно хотите внести эти изменения?')),
       e('p',{},t(action==='delete'?'Удалить строку':action==='insert'?'Добавить строку':'Изменить строку')+' · 1'),
       row?e('small',{},t('Первичный ключ')+' · '+JSON.stringify(key)):null,
@@ -1762,7 +1773,7 @@ function sqlView(target) {
       spellcheck:'false',required:true,maxlength:65000})),
     t('Предпросмотр изменений'),async ({sql})=>{
       openDialog(t('Предпросмотр изменений'),form([
-        e('strong',{},(connection.production?'PRODUCTION · ':'')+connection.name),
+        e('strong',{},'PRODUCTION · '+connection.name),
         e('p',{},t('Вы точно хотите выполнить эту SQL-команду?')),
         e('pre',{class:'schema-sql'},sql),
       ],t('Выполнить'),async ()=>{

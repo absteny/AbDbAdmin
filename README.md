@@ -97,6 +97,8 @@ docker compose exec -T abdbadmin node --disable-warning=ExperimentalWarning serv
    CA, paste its certificate in PEM format into the CA field.
 4. Select the saved connection. Select a table in **Structure** to browse data, **3D schema**
    to explore foreign keys, or **SQL** to run statements if you have access.
+   All database connections are marked **PRODUCTION**. Access permissions
+   are managed per user and connection.
 
 The application runs inside Docker. From its perspective, `127.0.0.1` is
 the application container. To connect to another container, put both services
@@ -112,7 +114,9 @@ from the Docker host on the database side.
    server administrator for it or read it from a trusted server console.
    For example, on a server with an Ed25519 host key, run
    `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Copy the fingerprint
-   starting with `SHA256:`.
+   starting with `SHA256:`. You can also choose **Fetch fingerprint** in
+   AbDbAdmin. Compare the result with the trusted fingerprint before selecting
+   **Use verified fingerprint**.
 4. Choose a private key file from your computer or paste its contents.
    Enter the key passphrase if it is encrypted. The corresponding public
    key needs to be authorized for the SSH user.

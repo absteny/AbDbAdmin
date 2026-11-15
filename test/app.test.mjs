@@ -128,10 +128,12 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
     assert.match(denied.body.error,/password/i);
     assert.ok(!JSON.stringify(denied.body).includes('wrong-password'));
     if (!pg) assert.ok(denied.body.peer);
-    const {body:{id}} = await request('connections','POST',profile,admin);
+    const {body:{id}} = await request('connections','POST',{...profile,production:false},admin);
     const saved = await readFile(join(directory,'claydb.sqlite-wal'));
     assert.equal(saved.includes(profile.password),false);
     const conn = 'connections/'+id;
+    assert.equal((await request('connections','GET',undefined,admin)).body.find(item=>item.id===id).production,true);
+    assert.equal((await request(conn+'/settings','GET',undefined,admin)).body.production,true);
     if (pg) {
       assert.ok((await request(conn+'/structure-editor','GET',undefined,admin)).body.columnTypes.includes('INTEGER'));
     } else {
@@ -224,6 +226,8 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
       try {
         const ssh={host:'127.0.0.1',port:proxy.address().port,user:'tunnel-test',fingerprint,privateKey:keypair.private,passphrase};
         const tunneled={...profile,name:'SSH test',ssh};
+        await request('ssh-fingerprint','POST',{host:ssh.host,port:ssh.port},reader,403);
+        assert.equal((await request('ssh-fingerprint','POST',{host:ssh.host,port:ssh.port},admin)).body.fingerprint,fingerprint);
         const wrongFingerprint='SHA256:'+Buffer.alloc(32).toString('base64').replace(/=$/,'');
         const wrong=await request('connection-test','POST',{...tunneled,ssh:{...ssh,fingerprint:wrongFingerprint}},admin,502);
         assert.match(wrong.body.error,/host key/i);
