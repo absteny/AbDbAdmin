@@ -50,13 +50,17 @@ export async function withDatabase(profile, fn, {scripts=false}={}) {
             if (index>=25) {truncated=true;return null;}
             return sets[index] ??= {columns:[],rows:[],affected:null,truncated:false};
           }
-          command.on('fields',(fields,index)=>{
+          // mysql2 Query omits the result index on field and OK packet events.
+          let current=-1;
+          const currentIndex=index=>Number.isInteger(index)?index:current;
+          command.on('fields',fields=>{
+            current++;
             if (!fields) return;
-            const set=result(index);
+            const set=result(current);
             if (set) set.columns=fields.map(field=>field.name);
           });
           command.on('result',(row,index)=>{
-            const set=result(index);
+            const set=result(currentIndex(index));
             if (!set) return;
             if (!Array.isArray(row)) set.affected=row.affectedRows ?? null;
             else if (set.rows.length<100 && bytes<=1048576) {

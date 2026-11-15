@@ -174,6 +174,23 @@ and spatial or vector columns. Use database backup tools for full backups.
 **Table maintenance** provides Check, Analyze, and Optimize. Availability
 and locking depend on the database engine and table.
 
+### Resume work from a URL
+
+AbDbAdmin keeps the selected connection, tab, schema, table and data page
+in the URL fragment. Reload or use browser Back and Forward to return to
+that screen. A bookmarked route is resolved after sign-in using the
+account's current permissions. SQL text, filter values, and credentials
+are excluded from the URL.
+
+### Inspect server status and object definitions
+
+On MySQL and MariaDB, administrators can open **Server status** to view
+selected global counters, settings, and the saved database account's grants.
+In **Database objects**, use **SQL definition** to view the accessible
+creation statement for a routine, trigger, or event. **Open in SQL scripts**
+copies the statement into an editable draft. Running it still requires a
+review and confirmation.
+
 ### Review row changes
 
 Use **Review changes** after editing or inserting a row. Deleting from the

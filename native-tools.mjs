@@ -111,3 +111,20 @@ export async function exportTableSql(db,database,table) {
   }
   return {sql,rows:data.rows.length};
 }
+
+export async function serverOverview(db) {
+  const keep=row=>row.map(value=>value==null?null:String(value));
+  const status=await db.query("SHOW GLOBAL STATUS WHERE Variable_name IN ('Uptime','Threads_connected','Threads_running','Questions','Slow_queries','Bytes_received','Bytes_sent')");
+  const variables=await db.query("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('version','version_comment','max_connections','read_only','character_set_server','collation_server','event_scheduler')");
+  const grants=await db.query('SHOW GRANTS FOR CURRENT_USER');
+  return {status:status.rows.map(keep),variables:variables.rows.map(keep),grants:grants.rows.map(keep)};
+}
+
+export async function objectDefinition(db,database,kind,name) {
+  const quote=value=>identifier(false,value);
+  const ref=quote(database)+'.'+quote(name);
+  const result=(await db.script('SHOW CREATE '+kind+' '+ref,row=>row)).sets[0];
+  const column=result?.columns.findIndex(title=>/^(?:Create (?:Procedure|Function|Event)|SQL Original Statement)$/i.test(title));
+  const sql=column>=0?result.rows[0]?.[column]:null;
+  return typeof sql==='string'?sql:Buffer.isBuffer(sql)?sql.toString('utf8'):null;
+}

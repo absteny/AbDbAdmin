@@ -1,4 +1,12 @@
 const english = {
+  "Определение объекта недоступно для этой учётной записи": "This database account cannot read the object definition",
+  "Состояние сервера": "Server status",
+  "Параметр": "Parameter",
+  "Настройки сервера": "Server settings",
+  "Права подключённой учётной записи": "Privileges of the connected database account",
+  "Определение SQL": "SQL definition",
+  "Открыть в SQL-скриптах": "Open in SQL scripts"
+,
   "Экспорт SQL не поддерживает этот тип столбца": "SQL export does not support this column type",
   "Таблица превышает лимит экспорта SQL": "The table exceeds the SQL export limit",
   "SQL-скрипты": "SQL scripts",

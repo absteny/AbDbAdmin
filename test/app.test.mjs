@@ -180,12 +180,23 @@ for (const local of [false,true]) test(local ? 'Local access, demo, and audit' :
       const results=await request(conn+'/database-search','POST',{text:'needle'},admin);
       assert.ok(results.body.results.some(result=>result.table==='clay_parent' && result.rows[0][0]==='Needle, with "quotes"'));
       await withDatabase(profile,db=>db.query('DELETE FROM clay_parent WHERE id=803'));
+      const overview=await request(conn+'/server-status','GET',undefined,admin);
+      assert.ok(overview.body.status.some(([name])=>name.toLowerCase()==='uptime'));
+      assert.ok(overview.body.grants.length);
+      await withDatabase(profile,async db=>{
+        await db.script('DROP EVENT IF EXISTS clay_route_event',row=>row);
+        await db.script('CREATE EVENT clay_route_event ON SCHEDULE AT CURRENT_TIMESTAMP + INTERVAL 1 DAY DISABLE DO SELECT 1',row=>row);
+      });
+      const object=await request(conn+'/object-definition?kind=EVENT&name=clay_route_event','GET',undefined,admin);
+      assert.match(object.body.sql,/CREATE.*EVENT/i);
+      await withDatabase(profile,db=>db.script('DROP EVENT clay_route_event',row=>row));
       const script=conn+'/sql-script';
       const probe='SELECT 13 AS first; SELECT 29 AS second';
       const {body:batchPreview}=await request(script,'POST',{sql:probe},admin);
       await request(script,'POST',{sql:probe+'; SELECT 3',confirmation:batchPreview.confirmation},admin,409);
       const {body:batch}=await request(script,'POST',{sql:probe,confirmation:batchPreview.confirmation},admin);
       assert.deepEqual(batch.sets.map(set=>String(set.rows[0][0])),["13","29"]);
+      assert.deepEqual(batch.sets.map(set=>set.columns[0]),["first","second"]);
       const roundtrip='clay_dump_test';
       await withDatabase(profile,async db=>{
         await db.query('DROP TABLE IF EXISTS clay_dump_test');

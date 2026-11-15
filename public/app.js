@@ -62,7 +62,7 @@ async function api(path, method='GET', payload) {
   const value = await response.json();
   if (!response.ok) {
     if (response.status === 401 && !['login','session'].includes(path)) {
-      tableViews.clear();
+      tableViews.clear();scriptDraft=null;
       state.user = null;
       if (dialog.open) dialog.close();
       login();
@@ -84,6 +84,7 @@ const rowParams = (filtered=true)=>{
 function applyTableView(view) {
   tableViews.set(tableScope(),view);
   state.offset=0;
+  writeRoute();
   render();
 }
 
@@ -110,6 +111,60 @@ function select(name, entries, value, attrs={}) {
   result.value = value;
   return result;
 }
+const utilityRoutes=new Set(['users','audit','demo']);
+const databaseRoutes=new Set(['structure','tables','graph','sql','database-search','sql-script','database-objects','schema-editor','server-status']);
+let pendingTable=null;
+let scriptDraft=null;
+let appliedHash=null;
+
+function allowedView(view,connection) {
+  if (utilityRoutes.has(view)) return Boolean(state.user.admin);
+  if (!databaseRoutes.has(view) || !connection) return false;
+  if (view==='sql') return connection.engine!=='demo' && ['admin','sql'].includes(connection.level);
+  if (view==='database-search') return ['mysql','mariadb'].includes(connection.engine);
+  if (['sql-script','database-objects','schema-editor','server-status'].includes(view)) {
+    return state.user.admin && ['mysql','mariadb'].includes(connection.engine);
+  }
+  return true;
+}
+function writeRoute(replace=false) {
+  if (!state.user) return;
+  const params=new URLSearchParams();
+  if (state.connection) params.set('connection',String(state.connection.id));
+  if (state.connection || utilityRoutes.has(state.view)) params.set('view',state.view);
+  const table=pendingTable ?? state.table;
+  if (state.connection && table && !utilityRoutes.has(state.view)) {
+    params.set('schema',table[0]);
+    params.set('table',table[1]);
+    if (state.view==='tables' && state.offset) params.set('offset',String(state.offset));
+  }
+  const hash=params.size?'#'+params:'';
+  if (location.hash!==hash) history[replace?'replaceState':'pushState'](null,'',location.pathname+location.search+hash);
+  appliedHash=location.hash;
+}
+function restoreRoute() {
+  if (!state.user) return;
+  const params=new URLSearchParams(location.hash.slice(1));
+  const connection=state.connections.find(item=>String(item.id)===params.get('connection')) ?? null;
+  const requested=params.get('view');
+  const view=allowedView(requested,connection)?requested:connection?'structure':'tables';
+  const table=params.get('table'), schema=params.get('schema');
+  pendingTable=connection && table && schema && !utilityRoutes.has(view)?[schema,table]:null;
+  const offset=Number(params.get('offset') ?? 0);
+  Object.assign(state,{connection,view,schema:null,tables:[],relations:[],table:null,
+    offset:view==='tables' && pendingTable && Number.isInteger(offset) && offset>=0 && offset<=1000000 && offset%50===0?offset:0});
+  writeRoute(true);
+  render();
+}
+function onRouteChange() {
+  if (state.user && location.hash!==appliedHash) {
+    if (dialog.open) dialog.close();
+    restoreRoute();
+  }
+}
+window.addEventListener('popstate',onRouteChange);
+window.addEventListener('hashchange',onRouteChange);
+
 function login() {
   renderId++;
   const content = form([
@@ -120,7 +175,7 @@ function login() {
     state.view = 'tables';
     state.connection = null;
     await refreshConnections();
-    render();
+    restoreRoute();
   });
   app.replaceChildren(div('login',div('panel login-card',
     div('login-main stack',div('row spread',brand(),languagePicker()),e('h1',{},t('Ваши базы данных')),e('p',{},t('Войдите, чтобы открыть сохранённые подключения.')),content),
@@ -133,10 +188,12 @@ async function refreshConnections() {
 }
 async function choose(id) {
   state.connection = state.connections.find(item=>item.id===id);
+  pendingTable=null;
   Object.assign(state,{view:'structure',schema:null,tables:[],relations:[],table:null,offset:0});
+  writeRoute();
   render();
 }
-function setView(view) { state.view=view; render(); }
+function setView(view) { state.view=view; writeRoute(); render(); }
 function changePassword() {
   openDialog(t('Сменить пароль'),form([
     label(t('Текущий пароль'),field('current','password','',{required:true,autocomplete:'current-password'})),
@@ -168,7 +225,7 @@ function render() {
       button(t('Демо'),()=>setView('demo'),null,{'aria-current':String(state.view==='demo')})):null,
     div('grow'),
     div('stack',languagePicker(),e('small',{},state.user.name),button(t('Сменить пароль'),changePassword),button(t('Выйти'),click(async()=>{
-      await api('logout','POST');tableViews.clear();state.user=null;login();
+      await api('logout','POST');tableViews.clear();scriptDraft=null;state.user=null;login();
     }))),
   ),e('main',{class:active && !utility?'main stack database-workspace':'main stack'},heading,
     active && !utility ? div('row tabs',
@@ -176,6 +233,7 @@ function render() {
         .map(([key,title])=>button(title,()=>setView(key),null,{'aria-current':String(state.view===key)})),
       mysqlWorkspace?button(t('Поиск по базе'),()=>setView('database-search'),null,{'aria-current':String(state.view==='database-search')}):null,
       admin && mysqlWorkspace?button(t('SQL-скрипты'),()=>setView('sql-script'),null,{'aria-current':String(state.view==='sql-script')}):null,
+      admin && mysqlWorkspace?button(t('Состояние сервера'),()=>setView('server-status'),null,{'aria-current':String(state.view==='server-status')}):null,
       admin && mysqlWorkspace?button(t('Объекты БД'),()=>setView('database-objects'),null,{'aria-current':String(state.view==='database-objects')}):null,
       admin && mysqlWorkspace?button(t('Редактор структуры'),()=>setView('schema-editor'),null,{'aria-current':String(state.view==='schema-editor')}):null,
       admin && !demo?button(t('Настройки'),click(async()=>editConnection(await api(route('settings')),active.id))):null,
@@ -192,6 +250,7 @@ function render() {
   if (state.view === 'sql') return sqlView(content);
   if (state.view==='sql-script' && mysqlWorkspace && admin) return scriptsView(content,stamp);
   if (state.view==='database-search' && mysqlWorkspace) return databaseSearchView(content,stamp);
+  if (state.view==='server-status' && mysqlWorkspace && admin) return serverStatusView(content,stamp).catch(error=>showError(content,stamp,error));
   if (state.view==='database-objects' && mysqlWorkspace && admin) return databaseObjectsView(content,stamp).catch(error=>showError(content,stamp,error));
   if (state.view === 'schema-editor' && admin && mysqlWorkspace) return schemaEditor(content,stamp).catch(error=>showError(content,stamp,error));
   loadTables(content,stamp).catch(error=>showError(content,stamp,error));
@@ -361,6 +420,8 @@ function scriptsView(target,stamp) {
   const output=div('stack');
   const file=field('file','file',undefined,{accept:'.sql,text/plain,application/sql'});
   const input=e('textarea',{name:'sql',class:'code',spellcheck:'false'});
+  if (scriptDraft?.id===connection.id) input.value=scriptDraft.sql;
+  scriptDraft=null;
   const warning=t('Скрипт может выполниться частично. Ранее выполненные команды не откатываются автоматически.');
   target.append(div('panel stack',e('h2',{},t('SQL-скрипты')),e('p',{},warning),
     form([label(t('SQL-файл'),file),label(t('Текст SQL'),input)],t('Предпросмотр изменений'),async ({sql})=>{
@@ -422,16 +483,41 @@ function databaseSearchView(target,stamp) {
       async ({text})=>search(text,0))),output);
 }
 
+async function serverStatusView(target,stamp) {
+  target.replaceChildren(e('p',{},t('Загрузка…')));
+  const data=await api(route('server-status'));
+  if (stamp!==renderId) return;
+  target.replaceChildren(div('panel stack',
+    div('row spread',e('h2',{},t('Состояние сервера')),button(t('Повторить'),render)),
+    resultTable({columns:[t('Параметр'),t('Значение')],rows:data.status}),
+    e('h3',{},t('Настройки сервера')),
+    resultTable({columns:[t('Параметр'),t('Значение')],rows:data.variables}),
+    e('h3',{},t('Права подключённой учётной записи')),
+    resultTable({columns:['GRANT'],rows:data.grants}),
+  ));
+}
 async function databaseObjectsView(target,stamp) {
+  const path=route('object-definition');
+  const id=state.connection.id;
   const data=await api(route('database-objects'));
   if (stamp!==renderId) return;
   const lists=[
-    ['Процедуры и функции',['Имя','Тип','Доступ к данным'],data.routines],
-    ['Триггеры',['Имя','Таблица','Момент','Действие'],data.triggers],
-    ['События',['Имя','Статус','Тип'],data.events],
+    ['Процедуры и функции',['Имя','Тип','Доступ к данным'],data.routines,row=>row[1]],
+    ['Триггеры',['Имя','Таблица','Момент','Действие'],data.triggers,()=>'TRIGGER'],
+    ['События',['Имя','Статус','Тип'],data.events,()=>'EVENT'],
   ];
-  for (const [title,headers,rows] of lists) target.append(div('panel stack',
-    e('h2',{},t(title)),rows.length?resultTable({columns:headers.map(header=>t(header)),rows}):e('p',{},t('Объекты не найдены.'))));
+  for (const [title,headers,rows,kind] of lists) target.append(div('panel stack',
+    e('h2',{},t(title)),rows.length?resultTable({columns:headers.map(header=>t(header)),rows},row=>
+      button(t('Определение SQL'),click(async ()=>{
+        const {sql}=await api(path+'?'+new URLSearchParams({kind:kind(row),name:row[0]}));
+        if (stamp!==renderId) return;
+        openDialog(t('Определение SQL'),div('stack',e('pre',{class:'schema-sql'},sql),
+          button(t('Открыть в SQL-скриптах'),()=>{
+            scriptDraft={id,sql};
+            dialog.close();
+            setView('sql-script');
+          })));
+      }))):e('p',{},t('Объекты не найдены.'))));
 }
 
 function openCsvImport() {
@@ -470,6 +556,11 @@ async function schemaEditor(target,stamp) {
   const [settings,schema]=await Promise.all([api(path),state.schema?Promise.resolve(state):api(route('schema'))]);
   if (stamp!==renderId) return;
   if (!state.schema) Object.assign(state,{schema:true,...schema});
+  if (pendingTable) {
+    state.table=state.tables.find(row=>row[0]===pendingTable[0] && row[1]===pendingTable[1]) ?? null;
+    pendingTable=null;
+    writeRoute(true);
+  }
   const tables=state.tables.filter(([schema,,type])=>schema===settings.database && type==='BASE TABLE');
   const picker=select('table',tables.map(([,name])=>[name,name]),state.table?.[1] ?? tables[0]?.[1]);
   if (!picker.value && tables.length) picker.value=tables[0][1];
@@ -564,7 +655,9 @@ async function schemaEditor(target,stamp) {
     );
   }
 
-  picker.addEventListener('change',click(loadDefinition));
+  picker.addEventListener('change',click(async ()=>{
+    state.table=tables.find(row=>row[1]===picker.value) ?? null;writeRoute();await loadDefinition();
+  }));
   target.replaceChildren(div('panel stack',
     div('row spread',e('h2',{},t('Редактор структуры')),button(t('Создать таблицу'),createTable,'primary')),
     tables.length?label(t('Таблица'),picker):e('p',{},t('Подходящих таблиц нет.')),details));
@@ -608,11 +701,17 @@ async function loadTables(target,stamp) {
       button(t('Обновить структуру'),()=>{state.schema=null;render();})));
     return;
   }
-  if (state.view==='graph') return graph(target);
-  if (state.view==='structure') return databaseStructure(target);
+  if (pendingTable) {
+    state.table=state.tables.find(row=>row[0]===pendingTable[0] && row[1]===pendingTable[1]) ?? null;
+    pendingTable=null;
+    if (!state.table) state.offset=0;
+  }
+  if (state.view==='graph') {writeRoute(true);return graph(target);}
+  if (state.view==='structure') {writeRoute(true);return databaseStructure(target);}
   if (!state.table) state.table=state.tables[0];
+  writeRoute(true);
   const selection = select('table',state.tables.map((entry,index)=>[String(index),entry[0]+'.'+entry[1]]),String(state.tables.indexOf(state.table)),{
-    onchange:event=>{state.table=state.tables[Number(event.target.value)];state.offset=0;render();},
+    onchange:event=>{state.table=state.tables[Number(event.target.value)];state.offset=0;writeRoute();render();},
   });
   const search = e('input',{type:'search',placeholder:t('Имя таблицы или схемы')});
   search.addEventListener('input',()=>{
@@ -652,8 +751,8 @@ async function loadTables(target,stamp) {
         ? button(t('Сбросить фильтры'),()=>applyTableView({filters:[],sort:null})) : null),
     resultTable(data,actions?row=>button(t('Изменить'),()=>rowDialog(data,path,row)):null),
     div('row spread',e('small',{},data.rows.length?t('Строки {start}–{end}',{start:state.offset+1,end:state.offset+data.rows.length}):t('Строк нет')),
-      div('row',button(t('Назад'),()=>{state.offset-=50;render();},null,{disabled:!state.offset}),
-        button(t('Далее'),()=>{state.offset+=50;render();},null,{disabled:!data.truncated || state.offset>=1000000}))),
+      div('row',button(t('Назад'),()=>{state.offset-=50;writeRoute();render();},null,{disabled:!state.offset}),
+        button(t('Далее'),()=>{state.offset+=50;writeRoute();render();},null,{disabled:!data.truncated || state.offset>=1000000}))),
   ));
   target.append(div('panel stack',e('h2',{},t('Столбцы')),resultTable({
     columns:[t('Имя'),t('Тип'),t('Допускает NULL'),t('Первичный ключ')],
@@ -914,7 +1013,7 @@ login();
 api('session').then(async user=>{
   state.user=user;
   await refreshConnections();
-  render();
+  restoreRoute();
 }).catch(error=>{
   if (state.user) {
     login();

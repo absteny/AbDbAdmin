@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
-import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql } from './native-tools.mjs';
+import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, serverOverview, objectDefinition } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes } from './schema-editor.mjs';
 import { demoStructure, demoRows } from './demo.mjs';
 import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
@@ -544,6 +544,20 @@ async function api(req, res, url, event) {
         const quote=name=>identifier(false,name);
         event.action='table.maintenance';
         return remote(profile,async db=>(await db.script(operation+' TABLE '+quote(profile.database)+'.'+quote(table),row=>row.map(limitText))).sets[0]);
+      }
+      if (action==='server-status' && method==='GET') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        return remote(profile,db=>serverOverview(db));
+      }
+      if (action==='object-definition' && method==='GET') {
+        requireValue(user.admin && mysql,'Требуются права администратора',403);
+        const kind=url.searchParams.get('kind');
+        const name=url.searchParams.get('name');
+        requireValue(['PROCEDURE','FUNCTION','TRIGGER','EVENT'].includes(kind) &&
+          name && name.length<=64 && !/[\x00-\x1f]/.test(name));
+        const sql=await remote(profile,db=>objectDefinition(db,profile.database,kind,name));
+        requireValue(sql,'Определение объекта недоступно для этой учётной записи',403);
+        return {sql};
       }
       if (action==='database-objects' && method==='GET') {
         requireValue(user.admin && mysql,'Требуются права администратора',403);
