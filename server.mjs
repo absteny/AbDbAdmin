@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { translate } from './public/i18n.js';
 import { parseCsv, importCsv, searchDatabase, databaseObjects, exportTableSql, exportDatabaseTables, serverOverview, objectDefinition, databasePrivileges, databaseAccountInput, databaseAccounts, applyDatabaseAccount, objectCommand } from './native-tools.mjs';
 import { schemaStatement, tableDefinition, columnTypes, tableEngines, postgresColumnTypes, postgresTableDefinition, postgresColumnStatement, postgresColumnEdit, mysqlTypeFamilies } from './schema-editor.mjs';
-import { withDatabase, structure, relations, tableData, columns, identifier } from './database.mjs';
+import { withDatabase, observeSshHostKey, structure, relations, tableData, columns, identifier } from './database.mjs';
 
 process.umask(0o077);
 const dataDir = process.env.DATA_DIR || './data';
@@ -252,10 +252,35 @@ function sshConfiguration(input,previous) {
   const sameEndpoint=previous?.host.toLowerCase()===host.toLowerCase() && previous.port===port;
   const endpoint=(host.includes(':')?'['+host+']':host).toLowerCase()+':'+port;
   const fingerprint=sshHostKeys.get(endpoint) ?? (sameEndpoint?previous.fingerprint:null);
-  if (!fingerprint) throw Object.assign(new RequestError(400,'Подключение остановлено до входа в базу. Для этого SSH-адреса не настроен доверенный ключ.'),{
-    resultCode:'SSH_HOST_KEY_UNCONFIGURED',endpoint,stage:'ssh',
-  });
   return {host,port,user,fingerprint,privateKey:privateKey.trim(),passphrase};
+}
+
+async function confirmSshHost(profile,approval,user) {
+  const ssh=profile.ssh;
+  if (!ssh || ssh.fingerprint) return;
+  const {host,port}=ssh;
+  const endpoint=(host.includes(':')?'['+host+']':host).toLowerCase()+':'+port;
+  if (typeof approval==='string' && approval.length<=2048) {
+    let claim;
+    try {claim=reveal(approval);} catch {}
+    if (claim?.purpose==='ssh-first-use' && claim.user===user.id && claim.endpoint===endpoint && claim.expires>Date.now()) {
+      ssh.fingerprint=claim.fingerprint;
+      return;
+    }
+  }
+  requireValue(active<12,'Слишком много одновременных запросов',503);
+  active++;
+  let fingerprint;
+  try {fingerprint=await observeSshHostKey({host,port});}
+  catch (error) {
+    const message=error.code==='SSH_TIMEOUT'?'SSH-сервер или туннель не ответил вовремя.':
+      'Не удалось подключиться к SSH-серверу. Проверьте адрес и порт.';
+    throw Object.assign(new RequestError(502,message),{stage:'ssh'});
+  } finally {active--;}
+  const trust={fingerprint,approval:protect({purpose:'ssh-first-use',user:user.id,endpoint,fingerprint,expires:Date.now()+300000})};
+  throw Object.assign(new RequestError(409,'Подтвердите ключ SSH-сервера перед первым подключением.'),{
+    resultCode:'SSH_HOST_KEY_CONFIRMATION',endpoint,stage:'ssh',trust,
+  });
 }
 
 function configuration(input, previous) {
@@ -591,7 +616,9 @@ async function api(req, res, url, event) {
       const record=access(user,input.id);
       previous=reveal(record.secret);
     }
-    return testConnection(configuration({...input,ca:input.ca ?? previous?.ca},previous));
+    const profile=configuration({...input,ca:input.ca ?? previous?.ca},previous);
+    await confirmSshHost(profile,input.sshApproval,user);
+    return testConnection(profile);
   }
   if (resource==='audit') {
     requireValue(user.admin,'Требуются права администратора',403);
@@ -729,7 +756,9 @@ async function api(req, res, url, event) {
     }
     if (!id && method === 'POST') {
       requireValue(user.admin,'Требуются права администратора',403);
-      const profile = configuration(await body(req));
+      const input=await body(req);
+      const profile=configuration(input);
+      await confirmSshHost(profile,input.sshApproval,user);
       await testConnection(profile);
       const {lastInsertRowid} = database.prepare('INSERT INTO connections(name,engine,secret) VALUES (?,?,?)').run(profile.name,profile.engine,protect(profile));
       event.connection = Number(lastInsertRowid);
@@ -744,6 +773,7 @@ async function api(req, res, url, event) {
           const previous = reveal(record.secret);
           const input = await body(req);
           const profile = configuration({...input,ca:input.ca ?? previous.ca},previous);
+          await confirmSshHost(profile,input.sshApproval,user);
           await testConnection(profile);
           const result = database.prepare('UPDATE connections SET name=?,engine=?,secret=? WHERE id=? AND secret=?').run(profile.name,profile.engine,protect(profile),id,record.secret);
           requireValue(result.changes,'Подключение было изменено. Откройте настройки снова.',409);
@@ -1088,6 +1118,7 @@ createServer(async (req,res) => {
       ...(error.stage?{stage:error.stage}:{}),
       ...(error.resultCode?{code:error.resultCode}:{}),
       ...(error.endpoint?{endpoint:error.endpoint}:{}),
+      ...(error.trust?{trust:error.trust}:{}),
     } : {})}));
   }
 }).listen(Number(process.env.PORT || 8099),process.env.BIND_HOST || '127.0.0.1',function () { console.log('AbDbAdmin listening on '+this.address().port); });

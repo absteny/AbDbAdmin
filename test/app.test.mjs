@@ -202,11 +202,13 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
       const keypair=utils.generateKeyPairSync('ed25519',{passphrase,cipher:'aes256-ctr'});
       const expected=utils.parseKey(keypair.public).getPublicSSH();
       const clients=new Set();
+      let authAttempts=0;
       const startProxy=key=>new Server({hostKeys:[key]},client=>{
         clients.add(client);
         client.on('error',()=>{});
         client.on('close',()=>clients.delete(client));
         client.on('authentication',context=>{
+          authAttempts++;
           if (context.username==='tunnel-test' && context.method==='publickey' && context.key.data.equals(expected) &&
               (!context.signature || utils.parseKey(keypair.public).verify(context.blob,context.signature,context.hashAlgo)===true)) {
             context.accept();
@@ -229,11 +231,26 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
       try {
         const ssh={host:'127.0.0.1',port:proxy.address().port,user:'tunnel-test',privateKey:keypair.private,passphrase};
         const tunneled={...profile,name:'SSH test',ssh};
-        const untrusted=await request('connection-test','POST',{...tunneled,ssh:{...ssh,port:ssh.port+1}},admin,400);
-        assert.match(untrusted.body.error,/trusted key/i);
-        assert.equal(untrusted.body.code,'SSH_HOST_KEY_UNCONFIGURED');
-        assert.equal(untrusted.body.stage,'ssh');
-        assert.equal(untrusted.body.endpoint,ssh.host+':'+(ssh.port+1));
+        const firstUse=startProxy(hostKey);
+        firstUse.listen(0,'127.0.0.1');
+        await once(firstUse,'listening');
+        try {
+          const newcomer={...tunneled,ssh:{...ssh,port:firstUse.address().port}};
+          const before=authAttempts;
+          const observed=(await request('connection-test','POST',newcomer,admin,409)).body;
+          assert.equal(observed.code,'SSH_HOST_KEY_CONFIRMATION');
+          assert.equal(observed.endpoint,ssh.host+':'+newcomer.ssh.port);
+          assert.match(observed.trust.fingerprint,/^SHA256:[A-Za-z0-9+/]{43}$/);
+          await request('connections','POST',{...newcomer,sshApproval:'forged'},admin,409);
+          assert.equal(authAttempts,before);
+          await request('connection-test','POST',{...newcomer,sshApproval:observed.trust.approval},admin);
+          const id=(await request('connections','POST',{...newcomer,sshApproval:observed.trust.approval},admin)).body.id;
+          await request('connections/'+id+'/sql','POST',{sql:'SELECT 1'},admin);
+          await request('connections/'+id,'DELETE',undefined,admin);
+        } finally {
+          for (const client of clients) client.end();
+          await new Promise(resolve=>firstUse.close(resolve));
+        }
         const invalid=await request('connection-test','POST',{...tunneled,ssh:{...ssh,passphrase:'wrong'}},admin,502);
         assert.match(invalid.body.error,/passphrase/i);
         await request('connection-test','POST',tunneled,admin);

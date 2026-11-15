@@ -1,8 +1,13 @@
-# AbDbAdmin
+# AbDbAdmin — Self-hosted database administration for MySQL, MariaDB, and PostgreSQL
 
-A self-hosted administration panel for PostgreSQL, MySQL, and MariaDB. Browse
-and edit tables, run SQL, and explore foreign keys in an interactive relationship map.
-Manage database access per user and review administrative activity in the audit log.
+AbDbAdmin is an open-source web-based SQL client and database admin panel
+that runs in Docker. Connect to multiple database servers, browse and edit
+table data, manage schemas, and run SQL from your browser. MySQL and MariaDB
+support SSH key tunnels and live server monitoring.
+
+- Browse tables, filter rows, edit records, and import or export data.
+- Explore table relationships and preview SQL before changing a schema.
+- Save database connections, manage user access, and review SQL in the audit log.
 
 ## 1. Install on your computer
 
@@ -119,30 +124,19 @@ from the Docker host on the database side.
 5. Choose **Test and save**. Use a database host name that matches its
    TLS certificate.
 
-The SSH server must allow TCP forwarding to the database. AbDbAdmin selects
-a trusted SSH host key automatically. Existing SSH connections can reuse their
-previously verified fingerprints. For new SSH servers, configure the trusted
-fingerprints once in the AbDbAdmin server's `.env`. Use the exact SSH host and
-port from the form. For IPv6, use `[address]:port` as the key.
+The SSH server must allow TCP forwarding to the database. When you connect
+to a new SSH endpoint, AbDbAdmin automatically displays the SSH server's
+host-key fingerprint. Compare it with the value from the SSH administrator
+or a trusted SSH-server console. If it matches, choose **Yes, trust this key**.
+AbDbAdmin begins database authentication only after you approve the key and
+the server presents the same fingerprint again.
 
-```dotenv
-ABDB_SSH_HOST_KEYS='{"ssh.example.net:22":"SHA256:REPLACE_WITH_THE_VERIFIED_FINGERPRINT"}'
-```
-
-Get the fingerprint from the SSH administrator or a trusted SSH-server
-console. For an Ed25519 host key, run
-`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on that server. Restart
-AbDbAdmin with the same installer command you normally use to apply the
-configuration. After an authorized key rotation, update the trusted value
-and restart again, then test and save the connection to update its stored
-fingerprint. SSH private keys and passphrases remain encrypted in
-saved profiles.
-
-**Test connection** shows the result above the form buttons. If the SSH
-address has no trusted key configured, the result includes the exact
-`host:port` to add to `ABDB_SSH_HOST_KEYS`. This check happens before SSH
-or database authentication, so changing the database password cannot
-resolve this particular error.
+Saving the connection stores the approved fingerprint and checks it on
+later connections. A changed server key blocks the connection. After an
+authorized rotation, verify the new fingerprint before creating a
+replacement profile. Operators can optionally preconfigure trusted host
+keys in `ABDB_SSH_HOST_KEYS`. SSH private keys and passphrases are stored
+encrypted in the saved profile.
 
 ### Browse a database
 

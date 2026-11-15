@@ -142,7 +142,7 @@ async function api(path, method='GET', payload, {quiet=false,signal}={}) {
         if (dialog.open) dialog.close();
         login();
       }
-      throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer,stage:value.stage,code:value.code,endpoint:value.endpoint});
+      throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer,stage:value.stage,code:value.code,endpoint:value.endpoint,trust:value.trust});
     }
     return value;
   } finally {finish();}
@@ -440,15 +440,21 @@ function editConnection(config={}, id=null) {
     result.hidden=false;
     if (kind!=='pending') result.scrollIntoView?.({block:'nearest'});
   }
-  function showFailure(error) {
+  let sshApproval;
+  function showFailure(error,submitter) {
+    if (error.code==='SSH_HOST_KEY_CONFIRMATION' && error.trust) {
+      showResult('pending','Подтвердите ключ SSH-сервера',
+        e('p',{},error.endpoint),e('code',{},error.trust.fingerprint),
+        e('p',{},t('Сверьте отпечаток с данными администратора SSH-сервера. Продолжайте, если он совпадает.')),
+        div('row',button(t('Да, доверять'),()=>{
+          sshApproval=error.trust.approval;
+          content.requestSubmit(submitter ?? undefined);
+        },'primary'),button(t('Отмена'),()=>{sshApproval=undefined;result.hidden=true;})));
+      result.scrollIntoView?.({block:'nearest'});
+      return;
+    }
     const title=error.stage==='ssh'?'Ошибка SSH':error.stage==='database'?'Ошибка подключения к базе':'Не удалось проверить подключение';
-    const setup=error.code==='SSH_HOST_KEY_UNCONFIGURED' && error.endpoint?div('stack',
-      e('p',{},t('Адрес для настройки доверия')),e('code',{},error.endpoint),
-      e('p',{},t('Добавьте подтверждённый отпечаток для этого адреса в ABDB_SSH_HOST_KEYS в файле .env на сервере AbDbAdmin. Затем повторно запустите установщик и проверьте подключение.')),
-      e('pre',{},'ABDB_SSH_HOST_KEYS='+JSON.stringify({[error.endpoint]:'SHA256:<verified-fingerprint>'})),
-      e('a',{href:'https://github.com/absteny/AbDbAdmin#connect-to-mysql-or-mariadb-through-ssh',target:'_blank',rel:'noopener'},t('Инструкция по настройке SSH')),
-    ):null;
-    showResult('error',title,e('p',{},error.message),setup);
+    showResult('error',title,e('p',{},error.message));
     toast(t(title),'error');
   }
   const content = form(div('fields',
@@ -474,6 +480,7 @@ function editConnection(config={}, id=null) {
     try {
       data.port=Number(data.port);
       data.ssh=null;
+      if (sshApproval) data.sshApproval=sshApproval;
       if (!sshFields.disabled) {
         await keyLoad;
         if (!keyFile.validity.valid) throw new Error(keyFile.validationMessage);
@@ -497,7 +504,7 @@ function editConnection(config={}, id=null) {
       }
       if (id) await api(`connections/${id}/settings`,'PUT',data);
       else next = (await api('connections','POST',data)).id;
-    } catch (error) {showFailure(error);return;}
+    } catch (error) {showFailure(error,action);return;}
     dialog.close();
     await refreshConnections();
     await choose(next);
@@ -510,8 +517,9 @@ function editConnection(config={}, id=null) {
     }),'danger'):null]);
   content.lastElementChild.before(result);
   content.addEventListener('input',()=>{result.hidden=true;});
+  for (const control of [sshHost,sshPort]) control.addEventListener('input',()=>{sshApproval=undefined;});
   content.addEventListener('invalid',()=>showResult('error','Проверьте выделенные поля'),true);
-  for (const mode of modes.children) mode.addEventListener('click',()=>{result.hidden=true;});
+  for (const mode of modes.children) mode.addEventListener('click',()=>{result.hidden=true;sshApproval=undefined;});
   openDialog(id?t('Настройки подключения'):t('Новое подключение'),content);
 }
 async function users(target,stamp) {

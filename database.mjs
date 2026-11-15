@@ -13,6 +13,29 @@ function sshError(code) {
   return Object.assign(new Error(code),{code});
 }
 
+export async function observeSshHostKey({host,port}) {
+  const {default:{Client}}=await import('ssh2');
+  const ssh=new Client();
+  try {
+    return await new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>finish(sshError('SSH_TIMEOUT')),7500);
+      const finish=(error,value)=>{
+        clearTimeout(timer);
+        if (error) reject(error); else resolve(value);
+      };
+      ssh.on('error',error=>finish(sshError(error.level==='client-timeout'?'SSH_TIMEOUT':'SSH_CONNECTION_FAILED')));
+      ssh.once('close',()=>finish(sshError('SSH_CONNECTION_FAILED')));
+      try {
+        ssh.connect({host,port,username:'abdbadmin',readyTimeout:7000,hostVerifier:raw=>{
+          const fingerprint='SHA256:'+createHash('sha256').update(raw).digest('base64').replace(/=$/,'');
+          finish(null,fingerprint);
+          return false;
+        }});
+      } catch {finish(sshError('SSH_CONNECTION_FAILED'));}
+    });
+  } finally {ssh.destroy();}
+}
+
 async function openSshChannel(profile) {
   const {default:{Client}}=await import('ssh2');
   const {host,port,user,privateKey,passphrase,fingerprint}=profile.ssh;

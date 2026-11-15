@@ -1,7 +1,8 @@
 {
   "name": "abdbadmin",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "private": true,
+  "description": "Self-hosted Docker web database admin and SQL client for MySQL, MariaDB, and PostgreSQL.",
   "type": "module",
   "engines": {
     "node": ">=24"
