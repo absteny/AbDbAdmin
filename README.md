@@ -138,6 +138,12 @@ and restart again, then test and save the connection to update its stored
 fingerprint. SSH private keys and passphrases remain encrypted in
 saved profiles.
 
+**Test connection** shows the result above the form buttons. If the SSH
+address has no trusted key configured, the result includes the exact
+`host:port` to add to `ABDB_SSH_HOST_KEYS`. This check happens before SSH
+or database authentication, so changing the database password cannot
+resolve this particular error.
+
 ### Browse a database
 
 Select a connection to expand its table list in the left sidebar and open

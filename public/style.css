@@ -324,3 +324,9 @@ textarea.sql-console-input::placeholder{color:#799a9b}
 .connection-mode[aria-pressed=true]{border-color:var(--accent);background:#d9f0eb}
 .connection-mode small{color:var(--muted);font-weight:500}
 @media(max-width:440px){.connection-modes{grid-template-columns:minmax(0,1fr)}}
+
+.connection-result{padding:.75rem .9rem;border:1px solid #a4d5ce;border-radius:12px;background:#e8f6f3;overflow-wrap:anywhere}
+.connection-result[data-kind=success]{background:#e4f6eb;border-color:#8cc2a1;color:#1d563a}
+.connection-result[data-kind=error]{background:#fff0ec;border-color:#dcaaa1;color:#852c26}
+.connection-result pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;color:inherit}
+.form-error:empty{display:none}

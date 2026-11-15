@@ -231,6 +231,9 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
         const tunneled={...profile,name:'SSH test',ssh};
         const untrusted=await request('connection-test','POST',{...tunneled,ssh:{...ssh,port:ssh.port+1}},admin,400);
         assert.match(untrusted.body.error,/trusted key/i);
+        assert.equal(untrusted.body.code,'SSH_HOST_KEY_UNCONFIGURED');
+        assert.equal(untrusted.body.stage,'ssh');
+        assert.equal(untrusted.body.endpoint,ssh.host+':'+(ssh.port+1));
         const invalid=await request('connection-test','POST',{...tunneled,ssh:{...ssh,passphrase:'wrong'}},admin,502);
         assert.match(invalid.body.error,/passphrase/i);
         await request('connection-test','POST',tunneled,admin);

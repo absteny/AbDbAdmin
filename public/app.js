@@ -116,7 +116,7 @@ async function api(path, method='GET', payload, {quiet=false,signal}={}) {
         if (dialog.open) dialog.close();
         login();
       }
-      throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer});
+      throw Object.assign(new Error(value.error || t('Ошибка запроса')),{peer:value.peer,stage:value.stage,code:value.code,endpoint:value.endpoint});
     }
     return value;
   } finally {finish();}
@@ -405,13 +405,32 @@ function editConnection(config={}, id=null) {
   engine.addEventListener('change',syncSsh);
   syncSsh();
   const observed=e('strong',{},t('Пока неизвестен'));
-  const status=e('small',{role:'status'});
+  const result=div('connection-result stack');
+  result.hidden=true;
+  result.setAttribute('role','status');
+  result.setAttribute('aria-live','polite');
+  function showResult(kind,title,...lines) {
+    result.dataset.kind=kind;
+    result.replaceChildren(e('strong',{},t(title)),...lines);
+    result.hidden=false;
+    if (kind!=='pending') result.scrollIntoView?.({block:'nearest'});
+  }
+  function showFailure(error) {
+    if (error.peer) observed.textContent=error.peer;
+    const title=error.stage==='ssh'?'Ошибка SSH':error.stage==='database'?'Ошибка подключения к базе':'Не удалось проверить подключение';
+    const setup=error.code==='SSH_HOST_KEY_UNCONFIGURED' && error.endpoint?div('stack',
+      e('p',{},t('Адрес для настройки доверия')),e('code',{},error.endpoint),
+      e('p',{},t('Добавьте подтверждённый отпечаток для этого адреса в ABDB_SSH_HOST_KEYS в файле .env на сервере AbDbAdmin. Затем повторно запустите установщик и проверьте подключение.')),
+      e('pre',{},'ABDB_SSH_HOST_KEYS='+JSON.stringify({[error.endpoint]:'SHA256:<verified-fingerprint>'})),
+      e('a',{href:'https://github.com/absteny/AbDbAdmin#connect-to-mysql-or-mariadb-through-ssh',target:'_blank',rel:'noopener'},t('Инструкция по настройке SSH')),
+    ):null;
+    showResult('error',title,e('p',{},error.message),setup);
+  }
   const network=div('network wide stack',
     e('strong',{},t('Ваш IP для доступа к БД')),
     div('row',e('span',{},t('Адрес по данным сервера БД')),observed),
     state.user.sourceIp ? div('row',e('span',{},t('Настроенный исходящий IP')),e('code',{},state.user.sourceIp)) : null,
     e('small',{},t('Нажмите «Проверить подключение». Если сервер не сообщил адрес, уточните его в журнале БД или у администратора сети.')),
-    status,
   );
   const content = form(div('fields',
     modes,
@@ -429,36 +448,39 @@ function editConnection(config={}, id=null) {
     config.customCa?e('label',{class:'check wide'},field('removeCa','checkbox','1'),t('Удалить сохранённый сертификат CA')):null,
     id?e('label',{class:'check wide'},field('resetPassword','checkbox','1'),t('Сохранить пустой пароль БД')):null,
   ),t('Проверить и сохранить'),async (data,_form,action)=>{
-    status.textContent='';
+    const testing=action?.value==='test';
+    showResult('pending',testing?'Проверяем подключение…':'Проверяем и сохраняем подключение…');
     observed.textContent=t('Пока неизвестен');
-    data.port=Number(data.port);
-    data.tls=Boolean(data.tls);
-    data.ssh=null;
-    if (!sshFields.disabled) {
-      await keyLoad;
-      if (!keyFile.validity.valid) throw new Error(keyFile.validationMessage);
-      const privateKey=keyText.value.trim();
-      if (!privateKey && !savedSsh?.hasKey) throw new Error(t('Выберите файл или вставьте приватный SSH-ключ.'));
-      data.ssh={host:sshHost.value.trim(),port:Number(sshPort.value),user:sshUser.value.trim(),
-        ...(privateKey?{privateKey}:{}),
-        ...(passphrase.value || clearPassphrase.checked?{passphrase:clearPassphrase.checked?'':passphrase.value}:{})};
-    }
-    if (id && !data.password && !data.resetPassword) delete data.password;
-    if (id && !data.ca && !data.removeCa) delete data.ca;
-    let next = id;
+    let next=id;
     try {
-      if (action?.value==='test') {
-        const result=await api('connection-test','POST',{...data,id});
-        if (result.peer) observed.textContent=result.peer;
-        status.textContent=t('Подключение работает. Настройки не сохранены.');
+      data.port=Number(data.port);
+      data.tls=Boolean(data.tls);
+      data.ssh=null;
+      if (!sshFields.disabled) {
+        await keyLoad;
+        if (!keyFile.validity.valid) throw new Error(keyFile.validationMessage);
+        const privateKey=keyText.value.trim();
+        if (!privateKey && !savedSsh?.hasKey) throw new Error(t('Выберите файл или вставьте приватный SSH-ключ.'));
+        data.ssh={host:sshHost.value.trim(),port:Number(sshPort.value),user:sshUser.value.trim(),
+          ...(privateKey?{privateKey}:{}),
+          ...(passphrase.value || clearPassphrase.checked?{passphrase:clearPassphrase.checked?'':passphrase.value}:{})};
+      }
+      if (id && !data.password && !data.resetPassword) delete data.password;
+      if (id && !data.ca && !data.removeCa) delete data.ca;
+      if (testing) {
+        const checked=await api('connection-test','POST',{...data,id});
+        if (checked.peer) observed.textContent=checked.peer;
+        const titles={mysql:'MySQL',mariadb:'MariaDB',postgres:'PostgreSQL'};
+        const routeLabel=data.ssh?t('Через SSH'):t('Прямое подключение');
+        showResult('success','Подключение проверено',
+          e('p',{},routeLabel+' · '+titles[data.engine]+' · '+data.host+':'+data.port+' / '+data.database),
+          checked.peer?e('small',{},t('Адрес по данным сервера БД')+' · '+checked.peer):null,
+          e('small',{},t('Настройки не сохранены. Нажмите «Проверить и сохранить».')));
         return;
       }
       if (id) await api(`connections/${id}/settings`,'PUT',data);
       else next = (await api('connections','POST',data)).id;
-    } catch (error) {
-      if (error.peer) observed.textContent=error.peer;
-      throw error;
-    }
+    } catch (error) {showFailure(error);return;}
     dialog.close();
     await refreshConnections();
     await choose(next);
@@ -469,6 +491,10 @@ function editConnection(config={}, id=null) {
       await refreshConnections();
       render();
     }),'danger'):null]);
+  content.lastElementChild.before(result);
+  content.addEventListener('input',()=>{result.hidden=true;});
+  content.addEventListener('invalid',()=>showResult('error','Проверьте выделенные поля'),true);
+  for (const mode of modes.children) mode.addEventListener('click',()=>{result.hidden=true;});
   openDialog(id?t('Настройки подключения'):t('Новое подключение'),content);
 }
 async function users(target,stamp) {

@@ -252,7 +252,9 @@ function sshConfiguration(input,previous) {
   const sameEndpoint=previous?.host.toLowerCase()===host.toLowerCase() && previous.port===port;
   const endpoint=(host.includes(':')?'['+host+']':host).toLowerCase()+':'+port;
   const fingerprint=sshHostKeys.get(endpoint) ?? (sameEndpoint?previous.fingerprint:null);
-  requireValue(fingerprint,'Для этого SSH-сервера администратор AbDbAdmin должен настроить доверенный ключ.',400);
+  if (!fingerprint) throw Object.assign(new RequestError(400,'Подключение остановлено до входа в базу. Для этого SSH-адреса не настроен доверенный ключ.'),{
+    resultCode:'SSH_HOST_KEY_UNCONFIGURED',endpoint,stage:'ssh',
+  });
   return {host,port,user,fingerprint,privateKey:privateKey.trim(),passphrase};
 }
 
@@ -333,6 +335,7 @@ async function remote(profile, fn, diagnosing=false, options) {
     const code = typeof error.code === 'string' && /^[A-Z0-9_]{1,60}$/.test(error.code) ? ' ('+error.code+')' : '';
     const message = Object.hasOwn(messages,error.code) ? messages[error.code] : 'Сервер БД не выполнил запрос';
     const failure=new RequestError(502,message+code);
+    if (diagnosing) failure.stage=typeof error.code==='string' && error.code.startsWith('SSH_')?'ssh':'database';
     if (diagnosing && ['ER_ACCESS_DENIED_ERROR','ER_HOST_NOT_PRIVILEGED'].includes(error.code)) {
       const reported=error.sqlMessage || error.message;
       const match=typeof reported==='string' && (/@'([^'\r\n]+)' \(using password: (?:YES|NO)\)$/i.exec(reported) ||
@@ -1079,6 +1082,11 @@ createServer(async (req,res) => {
     res.setHeader('Content-Type','application/json; charset=utf-8');
     res.removeHeader('Content-Disposition');
     if (res.statusCode === 500) console.error('Application error',error.code || error.name);
-    res.end(JSON.stringify({error:t(res.statusCode === 500 ? 'Внутренняя ошибка' : error.message),...(error instanceof RequestError && error.peer ? {peer:error.peer} : {})}));
+    res.end(JSON.stringify({error:t(res.statusCode === 500 ? 'Внутренняя ошибка' : error.message),...(error instanceof RequestError ? {
+      ...(error.peer?{peer:error.peer}:{}),
+      ...(error.stage?{stage:error.stage}:{}),
+      ...(error.resultCode?{code:error.resultCode}:{}),
+      ...(error.endpoint?{endpoint:error.endpoint}:{}),
+    } : {})}));
   }
 }).listen(Number(process.env.PORT || 8099),process.env.BIND_HOST || '127.0.0.1',function () { console.log('AbDbAdmin listening on '+this.address().port); });
