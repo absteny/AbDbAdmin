@@ -301,11 +301,25 @@ changes, connection changes, CSV exports, row writes, and SQL
 execution. Each event displays the time, action, outcome, and available actor
 and target identifiers. Failed sign-ins omit the submitted username.
 
-The log stores event metadata in the local settings database. It excludes
-passwords, session tokens, profile secrets, raw SQL, and row values. It keeps
-roughly the latest 10,000 events. The log is intended for operational review.
-It can be altered by someone with access to the local data volume, and an
-audit storage error can leave a gap after a database operation completes.
+The log keeps roughly 10,000 events. Administrators can open **View SQL**
+on an entry to see submitted SQL or the statements and bound values used
+for a row or structure change. SQL details are encrypted in the local data
+volume, use the same vault key as saved connections, and are retained for
+the latest 1,000 SQL entries. Large statements are truncated. SQL and
+parameters can contain confidential data, including secrets typed into SQL.
+Restrict access to the application administrator account and data volume.
+
+**Undo** shows the compensating SQL and its parameters before confirmation.
+It is available for eligible row updates made through the table editor on
+PostgreSQL and InnoDB. It requires a primary key, matching row snapshots,
+and table metadata compatible with the update. A batch rolls back entirely
+if any row no longer matches. Arbitrary SQL, SQL scripts, schema changes,
+inserts and deletes have no automatic undo. Use database backups or native
+recovery tools when those operations need to be reversed.
+
+The journal is intended for operational review. Someone with access to the
+local data volume can alter it, and a local audit write error can leave a
+gap after a database operation completes.
 
 ## Advanced MySQL and MariaDB administration
 

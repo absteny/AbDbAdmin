@@ -421,6 +421,29 @@ for (const local of [false,true]) test(local ? 'Local access and audit' : 'Remot
     await withDatabase(profile,async db=>{
       assert.deepEqual((await db.query('SELECT description FROM '+duplicateTable+' ORDER BY id')).rows,[['copy me'],['copy me']]);
     });
+    const beforeUndo=(await request(duplicateRows,'GET',undefined,reader)).body;
+    await request(duplicateRows,'POST',{action:'update',key:{id:1},values:{description:'updated'},
+      snapshot:beforeUndo.snapshots[1]},reader);
+    const history=(await request('audit','GET',undefined,admin)).body;
+    const entry=history.entries.find(item=>item.action==='row.update' && item.actor==='reader');
+    assert.equal(entry.undo_state,'ready');
+    await request('audit/'+entry.id,'GET',undefined,reader,403);
+    const detail=(await request('audit/'+entry.id,'GET',undefined,admin)).body;
+    assert.match(detail.statements[0].sql,/^UPDATE /);
+    assert.deepEqual(detail.rollback[0].parameters,['copy me',1]);
+    await request('audit/'+entry.id+'/undo','POST',{confirmed:false},admin,409);
+    await withDatabase(profile,db=>db.query("UPDATE "+duplicateTable+" SET description='newer' WHERE id=1"));
+    await request('audit/'+entry.id+'/undo','POST',{confirmed:true},admin,409);
+    await withDatabase(profile,db=>db.query("UPDATE "+duplicateTable+" SET description='updated' WHERE id=1"));
+    await request('audit/'+entry.id+'/undo','POST',{confirmed:true},admin);
+    await request('audit/'+entry.id+'/undo','POST',{confirmed:true},admin,409);
+    assert.equal((await request('audit/'+entry.id,'GET',undefined,admin)).body.undoState,'done');
+    assert.equal((await request(duplicateRows,'GET',undefined,reader)).body.rows[1][1],'copy me');
+    await request(conn+'/sql','POST',{sql:'SELECT 31415'},reader);
+    const sqlEvent=(await request('audit','GET',undefined,admin)).body.entries.find(item=>item.action==='sql.execute');
+    const sqlDetail=(await request('audit/'+sqlEvent.id,'GET',undefined,admin)).body;
+    assert.equal(sqlDetail.statements[0].sql,'SELECT 31415');
+    assert.equal(sqlDetail.undoState,'unavailable');
     await withDatabase(profile,db=>db.query('DROP TABLE '+duplicateTable));
     await request(userPermission,'PUT',{connection:id,level:null},admin);
     await request(rows,'GET',undefined,reader,404);

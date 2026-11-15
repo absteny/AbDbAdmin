@@ -24,6 +24,11 @@ database.exec(`
     actor TEXT, action TEXT NOT NULL, connection_id INTEGER, subject_id INTEGER,
     status INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS audit_sql (
+    audit_id INTEGER PRIMARY KEY REFERENCES audit(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL,
+    undo_state TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, admin INTEGER NOT NULL
@@ -49,10 +54,18 @@ database.exec(`
 `);
 
 const writeAudit = database.prepare('INSERT INTO audit(created_at,actor,action,connection_id,subject_id,status) VALUES (?,?,?,?,?,?)');
+const writeAuditSql=database.prepare('INSERT INTO audit_sql VALUES (?,?,?)');
+const trimAuditSql=database.prepare('DELETE FROM audit_sql WHERE audit_id IN (SELECT audit_id FROM audit_sql ORDER BY audit_id DESC LIMIT -1 OFFSET 1000)');
 const trimAudit = database.prepare('DELETE FROM audit WHERE id <= ?');
 function recordAudit(ctx,status) {
   const {lastInsertRowid} = writeAudit.run(Date.now(),ctx.actor ?? null,ctx.action,ctx.connection ?? null,ctx.subject ?? null,status);
   const id=Number(lastInsertRowid);
+  if (ctx.sql?.length) {
+    const undo=status<400 && ctx.undo?.length===ctx.sql.length && !ctx.sqlTruncated &&
+      Buffer.byteLength(JSON.stringify(ctx.undo))<=65536?ctx.undo:null;
+    writeAuditSql.run(id,protect({statements:ctx.sql,truncated:!!ctx.sqlTruncated,undo}),undo?'ready':'unavailable');
+    trimAuditSql.run();
+  }
   if (id%100===0) trimAudit.run(id-10000);
 }
 function audit(ctx,status) {
@@ -304,7 +317,76 @@ function readView(url) {
 function rowToken(record,schema,table,row) {
   return createHmac('sha256',key).update(JSON.stringify([record.id,record.secret,schema,table,row])).digest('hex');
 }
-async function changeRow(db, schema, table, input, record, batchFields) {
+function rememberSql(event,sql,parameters) {
+  if (!event) return;
+  event.sql ??= [];
+  const statement={sql,parameters};
+  const bytes=Buffer.byteLength(JSON.stringify(statement));
+  if ((event.sqlBytes ?? 0)+bytes>65536) {
+    event.sqlTruncated=true;
+    if (!event.sql.length) event.sql.push({sql:sql.slice(0,16000)});
+    return;
+  }
+  event.sql.push(statement);
+  event.sqlBytes=(event.sqlBytes ?? 0)+bytes;
+}
+
+async function undoMetadata(db,schema,table) {
+  const markers=db.pg?['$1','$2']:['?','?'];
+  const [first,second]=markers;
+  const args=[schema,table];
+  const tableInfo=await db.query(`SELECT table_type${db.pg?'':',engine'} FROM information_schema.tables
+    WHERE table_schema=${first} AND table_name=${second}`,args);
+  if (tableInfo.rows[0]?.[0]!=='BASE TABLE' || !db.pg && !/^innodb$/i.test(tableInfo.rows[0]?.[1])) return null;
+  const quote=value=>identifier(db.pg,value);
+  if (!db.pg) {
+    const grants=(await db.query('SHOW GRANTS FOR CURRENT_USER')).rows.map(([value])=>value);
+    const scopes=['*.*',quote(schema)+'.*',quote(schema)+'.'+quote(table)];
+    if (!grants.some(grant=>{
+      const match=/^GRANT (.+) ON (.+) TO /i.exec(grant);
+      return match && scopes.includes(match[2]) && /(?:^|,\s*)(?:ALL PRIVILEGES|TRIGGER)(?:,|$)/i.test(match[1]);
+    })) return null;
+  }
+  if (db.pg) {
+    const ordinary=await db.query(`SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname=$1 AND c.relname=$2 AND c.relkind='r' AND NOT c.relhasrules
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i WHERE i.inhrelid=c.oid OR i.inhparent=c.oid)`,args);
+    if (!ordinary.rows.length) return null;
+  }
+  const triggers=db.pg
+    ? await db.query(`SELECT 1 FROM pg_catalog.pg_trigger g JOIN pg_catalog.pg_class c ON c.oid=g.tgrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname=$1 AND c.relname=$2 AND NOT g.tgisinternal AND g.tgenabled<>'D' LIMIT 1`,args)
+    : await db.query(`SELECT 1 FROM information_schema.triggers WHERE event_object_schema=? AND event_object_table=? LIMIT 1`,args);
+  if (triggers.rows.length) return null;
+  const references=db.pg
+    ? await db.query(`SELECT 1 FROM pg_catalog.pg_constraint f JOIN pg_catalog.pg_class c ON c.oid=f.confrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname=$1 AND c.relname=$2 AND f.contype='f' LIMIT 1`,args)
+    : await db.query(`SELECT 1 FROM information_schema.key_column_usage
+      WHERE referenced_table_schema=? AND referenced_table_name=? LIMIT 1`,args);
+  if (references.rows.length) return null;
+  return columns(db,schema,table,true);
+}
+
+function buildUndo(db,schema,table,metadata,keys,names,entries,current,after,record) {
+  const changed=entries.map(([name])=>name);
+  const valid=value=>value===null || typeof value==='string' || typeof value==='boolean' || typeof value==='number' && Number.isFinite(value);
+  if (changed.some(name=>keys.includes(name)) || keys.some(name=>!valid(current[names.indexOf(name)])) ||
+      changed.some(name=>!valid(current[names.indexOf(name)])) ||
+      names.some((name,index)=>!changed.includes(name) && JSON.stringify(current[index])!==JSON.stringify(after[index]))) return null;
+  const quote=value=>identifier(db.pg,value);
+  const params=changed.map(name=>current[names.indexOf(name)]);
+  const primary=keys.map(name=>current[names.indexOf(name)]);
+  const mark=i=>db.pg?'$'+(i+1):'?';
+  const where=keys.map((name,index)=>quote(name)+'='+mark(index)).join(' AND ');
+  const condition=keys.map((name,index)=>quote(name)+'='+mark(params.length+index)).join(' AND ');
+  return {schema,table,definition:digest(JSON.stringify(metadata)),primary,where,
+    sql:'UPDATE '+quote(schema)+'.'+quote(table)+' SET '+changed.map((name,index)=>quote(name)+'='+mark(index)).join(', ')+' WHERE '+condition,
+    parameters:[...params,...primary],expected:rowToken(record,schema,table,after),restored:rowToken(record,schema,table,current)};
+}
+
+async function changeRow(db, schema, table, input, record, batchFields, event, batchMetadata) {
   const fields = batchFields ?? await columns(db,schema,table);
   requireValue(fields.length, 'Таблица недоступна', 404);
   const tableType = batchFields ? null : await db.query(
@@ -336,6 +418,7 @@ async function changeRow(db, schema, table, input, record, batchFields) {
       'UPDATE '+target+' SET '+entries.map(([name,value])=>quote(name)+'='+bind(value)).join(', ');
     sql = start + ' WHERE ' + keys.map(name=>quote(name)+'='+bind(input.key[name])).join(' AND ');
   }
+  rememberSql(event,sql,args);
   if (op==='insert' || input.snapshot===undefined) return {affected:(await db.query(sql,args)).affected};
   requireValue(typeof input.snapshot==='string' && /^[a-f0-9]{64}$/.test(input.snapshot));
   const condition=keys.map((name,index)=>quote(name)+'='+(db.pg?'$'+(index+1):'?')).join(' AND ');
@@ -343,12 +426,22 @@ async function changeRow(db, schema, table, input, record, batchFields) {
     const current=await db.query('SELECT * FROM '+target+' WHERE '+condition+' FOR UPDATE',keys.map(name=>input.key[name]),1);
     requireValue(current.rows.length && rowToken(record,schema,table,current.rows[0])===input.snapshot,
       'Строка изменилась. Обновите таблицу перед повтором.',409);
-    return {affected:(await db.query(sql,args)).affected};
+    let metadata=null;
+    if (op==='update' && event) metadata=batchFields?batchMetadata:await undoMetadata(db,schema,table).catch(()=>null);
+    const result=await db.query(sql,args);
+    if (metadata?.length && result.affected===1 && entries.every(([name])=>!keys.includes(name))) {
+      const after=await db.query('SELECT * FROM '+target+' WHERE '+condition,keys.map(name=>input.key[name]),1);
+      if (after.rows.length) {
+        const undo=buildUndo(db,schema,table,metadata,keys,names,entries,current.rows[0],after.rows[0],record);
+        if (undo && Buffer.byteLength(JSON.stringify(undo))<=16384) (event.undo ??= []).push(undo);
+      }
+    }
+    return {affected:result.affected};
   };
   return batchFields?write():db.transaction(write);
 }
 
-async function changeSelectedRows(db,schema,table,input,record) {
+async function changeSelectedRows(db,schema,table,input,record,event) {
   const copy=input.action==='copy';
   requireValue(['update','delete','copy'].includes(input.action) && Array.isArray(input.rows) &&
     input.rows.length>0 && input.rows.length<=50 && input.rows.every(row=>row && /^[a-f0-9]{64}$/.test(row.snapshot)));
@@ -379,10 +472,11 @@ async function changeSelectedRows(db,schema,table,input,record) {
       copyNames=fields.filter(column=>!automatic(column[4]) && !column[4].generation_expression).map(([name])=>quote(name)).join(', ');
       condition=keys.map(([name],i)=>quote(name)+'='+(db.pg?'$'+(i+1):'?')).join(' AND ');
     }
+    const metadata=input.action==='update'?await undoMetadata(db,schema,table).catch(()=>null):null;
     let affected=0;
     for (const {key,snapshot} of input.rows) {
       if (!copy) {
-        const result=await changeRow(db,schema,table,{action:input.action,key,snapshot,values:input.values},record,fields);
+        const result=await changeRow(db,schema,table,{action:input.action,key,snapshot,values:input.values},record,fields,event,metadata);
         affected+=result.affected ?? 0;
         continue;
       }
@@ -393,6 +487,7 @@ async function changeSelectedRows(db,schema,table,input,record) {
         'Строка изменилась. Обновите таблицу перед повтором.',409);
       const insert=copyNames?' ('+copyNames+') SELECT '+copyNames+' FROM '+target+' WHERE '+condition:
         db.pg?' DEFAULT VALUES':' () VALUES ()';
+      rememberSql(event,'INSERT INTO '+target+insert,copyNames?args:[]);
       const result=await db.query('INSERT INTO '+target+insert,copyNames?args:[]);
       affected+=result.affected ?? 0;
     }
@@ -445,13 +540,71 @@ async function api(req, res, url, event) {
     }
     return testConnection(configuration({...input,ca:input.ca ?? previous?.ca},previous));
   }
-  if (resource === 'audit' && method === 'GET') {
+  if (resource==='audit') {
     requireValue(user.admin,'Требуются права администратора',403);
-    const before = safeId(url.searchParams.get('before'));
-    const entries = before === null
-      ? database.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 51').all()
-      : database.prepare('SELECT * FROM audit WHERE id<? ORDER BY id DESC LIMIT 51').all(before);
-    return {entries:entries.slice(0,50),next:entries.length>50 ? entries[49].id : null};
+    if (!id && method==='GET') {
+      const before=safeId(url.searchParams.get('before'));
+      const select="SELECT a.*, COALESCE(s.undo_state,'') AS undo_state FROM audit a LEFT JOIN audit_sql s ON s.audit_id=a.id";
+      const entries=before===null
+        ? database.prepare(select+' ORDER BY a.id DESC LIMIT 51').all()
+        : database.prepare(select+' WHERE a.id<? ORDER BY a.id DESC LIMIT 51').all(before);
+      return {entries:entries.slice(0,50),next:entries.length>50?entries[49].id:null};
+    }
+    const auditId=safeId(id);
+    requireValue(auditId!==null,'Запись журнала недоступна',404);
+    const item=database.prepare(`SELECT a.connection_id,s.payload,s.undo_state FROM audit_sql s
+      JOIN audit a ON a.id=s.audit_id WHERE s.audit_id=?`).get(auditId);
+    requireValue(item,'Запись журнала недоступна',404);
+    const {statements,truncated,undo}=reveal(item.payload);
+    if (!action && method==='GET') return {statements,truncated,undoState:item.undo_state,
+      rollback:undo?.slice().reverse().map(({sql,parameters})=>({sql,parameters})) ?? []};
+    if (action==='undo' && method==='POST') {
+      const {confirmed}=await body(req);
+      requireValue(confirmed===true && undo?.length && item.undo_state==='ready','Откат недоступен',409);
+      const record=access(user,item.connection_id);
+      requireValue(record,'Подключение недоступно',404);
+      const profile=reveal(record.secret);
+      const claim=database.prepare("UPDATE audit_sql SET undo_state='pending' WHERE audit_id=? AND undo_state='ready'").run(auditId);
+      requireValue(claim.changes===1,'Откат недоступен',409);
+      event.action='row.undo';event.connection=record.id;event.subject=auditId;
+      let safeRetry=false;
+      try {
+        await remote(profile,db=>db.transaction(async ()=>{
+          const checks=new Map();
+          for (const entry of undo.slice().reverse()) {
+            const {schema,table,where,primary,sql,parameters,expected,restored}=entry;
+            const quote=value=>identifier(db.pg,value);
+            const target=quote(schema)+'.'+quote(table);
+            if (!checks.has(target)) {
+              await db.query('SELECT 1 FROM '+target+' WHERE 1=0');
+              checks.set(target,digest(JSON.stringify(await undoMetadata(db,schema,table))));
+            }
+            if (checks.get(target)!==entry.definition) {
+              safeRetry=true;
+              throw new RequestError(409,'Структура таблицы изменилась. Откат остановлен.');
+            }
+            const read=()=>db.query('SELECT * FROM '+target+' WHERE '+where+' FOR UPDATE',primary,1);
+            const row=(await read()).rows[0];
+            if (!row || rowToken(record,schema,table,row)!==expected) {
+              safeRetry=true;
+              throw new RequestError(409,'Строка изменилась. Откат остановлен.');
+            }
+            rememberSql(event,sql,parameters);
+            await db.query(sql,parameters);
+            const reverted=(await read()).rows[0];
+            if (!reverted || rowToken(record,schema,table,reverted)!==restored) {
+              safeRetry=true;
+              throw new RequestError(409,'База вернула другие значения. Откат остановлен.');
+            }
+          }
+        }));
+        database.prepare("UPDATE audit_sql SET undo_state='done' WHERE audit_id=?").run(auditId);
+        return {};
+      } catch (error) {
+        if (safeRetry) database.prepare("UPDATE audit_sql SET undo_state='ready' WHERE audit_id=?").run(auditId);
+        throw error;
+      }
+    }
   }
   if (resource === 'session' && method === 'GET') return {...user,advancedUrl:advancedUrl(user),sourceIp:user.admin?sourceIp:null};
   if (resource === 'logout' && method === 'POST') {
@@ -559,6 +712,7 @@ async function api(req, res, url, event) {
         if (confirmation===undefined) return {confirmation:expected,database:profile.database};
         requireValue(confirmation===expected,'Сначала откройте предпросмотр изменений',409);
         event.action='sql.script';
+        rememberSql(event,sql);
         return remote(profile,db=>db.script(sql,row=>row.map(limitText)),false,{scripts:true});
       }
       if (['sql-export','database-export'].includes(action) && method==='GET') {
@@ -700,6 +854,7 @@ async function api(req, res, url, event) {
             if (input.preview===true) return {sql,confirmation};
             requireValue(input.confirmation===confirmation,'Сначала откройте предпросмотр изменений',409);
             event.action='schema.change';
+            rememberSql(event,sql);
             if (statements) await db.transaction(async ()=>{for (const statement of statements) await db.query(statement);});
             else await db.query(sql);
             return {};
@@ -733,6 +888,7 @@ async function api(req, res, url, event) {
             if (input.preview===true) return {sql,confirmation};
             requireValue(input.confirmation===confirmation,'Сначала откройте предпросмотр изменений',409);
             event.action='schema.change';
+            rememberSql(event,sql);
             if (['modify-column','set-column-default'].includes(input.operation)) {
               await db.script(`SET SESSION sql_mode=CONCAT_WS(',',NULLIF(@@SESSION.sql_mode,''),
                 IF(FIND_IN_SET('STRICT_ALL_TABLES',@@SESSION.sql_mode),NULL,'STRICT_ALL_TABLES'),
@@ -755,6 +911,7 @@ async function api(req, res, url, event) {
         requireValue(['sql','admin'].includes(record.level),'Нет доступа к SQL',403);
         const {sql} = await body(req);
         requireValue(typeof sql === 'string' && sql.trim() && sql.length <= 65000,'Введите SQL-запрос');
+        rememberSql(event,sql);
         return remote(profile,async db=>rowResult(await db.query(sql,[],201)));
       }
       if (['rows','csv','views'].includes(action)) {
@@ -823,7 +980,7 @@ async function api(req, res, url, event) {
           requireValue(record.level !== 'view','Нет права изменять строки',403);
           const input = await body(req);
           if (['insert','update','delete','copy'].includes(input.action)) event.action='row.'+input.action;
-          return remote(profile,db=>input.rows===undefined?changeRow(db,schema,table,input,record):changeSelectedRows(db,schema,table,input,record));
+          return remote(profile,db=>input.rows===undefined?changeRow(db,schema,table,input,record,undefined,event):changeSelectedRows(db,schema,table,input,record,event));
         }
       }
     }

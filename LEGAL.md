@@ -31,7 +31,10 @@ registries.
 The instance stores account names, password hashes, session and permission
 metadata, encrypted connection profiles, and an audit log on the operator's
 server. Audit records include available actor names, target identifiers,
-timestamps, actions, and outcomes. The application sends queries to configured
+timestamps, actions, and outcomes. SQL details can include query text,
+bound values, and previous values used to undo eligible edits. These details
+are stored encrypted on the operator's server and visible to application
+administrators. The application sends queries to configured
 database servers and presents the results to authorized users. CSV exports
 are downloaded by the user.
 

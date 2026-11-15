@@ -59,6 +59,8 @@ const requestLabel=document.querySelector('#request-loader-label');
 let requestTimer;
 function requestTitle(path,method) {
   const endpoint=path.split('?')[0].split('/').at(-1);
+  if (endpoint==='undo') return 'Отменяем изменение…';
+  if (path.split('/')[0].split('?')[0]==='audit') return 'Загружаем журнал…';
   if (endpoint==='session') return 'Проверяем сеанс…';
   if (endpoint==='login') return 'Входим в панель…';
   if (endpoint==='schema' || endpoint==='structure-editor' && method==='GET') return 'Загрузка структуры…';
@@ -429,7 +431,7 @@ const auditActions = {
   'user.create':'Создание пользователя','user.delete':'Удаление пользователя','permission.change':'Изменение прав',
   'connection.create':'Создание подключения','connection.update':'Изменение подключения','connection.delete':'Удаление подключения',
   'sql.execute':'Выполнение SQL','row.write':'Операция со строкой','row.insert':'Добавление строки',
-  'row.copy':'Дублирование строк','row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры','csv.import':'Импорт CSV','sql.script':'Выполнение SQL-скрипта','sql.export':'Экспорт SQL','table.maintenance':'Обслуживание таблицы',
+  'row.undo':'Откат изменения строк','row.copy':'Дублирование строк','row.update':'Изменение строки','row.delete':'Удаление строки','csv.export':'Экспорт CSV','demo.enable':'Подключение демо','schema.change':'Изменение структуры','csv.import':'Импорт CSV','sql.script':'Выполнение SQL-скрипта','sql.export':'Экспорт SQL','table.maintenance':'Обслуживание таблицы',
   'db-account.create':'Создание пользователя СУБД','db-account.password':'Смена пароля пользователя СУБД',
   'db-account.drop':'Удаление пользователя СУБД','db-account.grant':'Выдача прав СУБД','db-account.revoke':'Отзыв прав СУБД','database.export':'Выгрузка базы',
   'db-object.create':'Создание события','db-object.drop':'Удаление объекта',
@@ -448,10 +450,43 @@ async function auditView(target,stamp,before=null) {
     item.subject_id==null?'—':'#'+item.subject_id,
     t(item.status<400?'Успешно':'Ошибка')+' ('+item.status+')',
   ]);
+  function statements(list) {
+    return list.map(({sql,parameters})=>div('stack audit-statement',e('pre',{class:'schema-sql'},sql),
+      parameters?.length?e('pre',{class:'audit-parameters'},t('Параметры по порядку')+'\n'+JSON.stringify(parameters,null,2)):null));
+  }
+  async function details(id) {
+    const info=await api('audit/'+id);
+    if (stamp!==renderId) return;
+    const ready=info.undoState==='ready';
+    const status={done:'Изменение уже отменено',pending:'Результат отката нужно проверить в базе',
+      unavailable:'Для этого запроса автоматический откат недоступен'}[info.undoState];
+    const title=t('Запрос журнала')+' #'+id;
+    const rollback=div('stack',e('h3',{},t('SQL отката')),statements(info.rollback));
+    const apply=button(t('Откатить'),()=>{
+      openDialog(t('Подтвердить откат'),form([
+        e('p',{},t('Вы точно хотите внести эти изменения?')),
+        div('stack',statements(info.rollback)),
+      ],t('Подтвердить'),async()=>{
+        await api('audit/'+id+'/undo','POST',{confirmed:true});
+        dialog.close();
+        toast(t('Изменение отменено'));
+        await load(null);
+      },button(t('Назад'),click(()=>details(id)))));
+    },'danger',{disabled:!ready});
+    openDialog(title,div('stack audit-detail',
+      e('h3',{},t('SQL запроса')),statements(info.statements),
+      info.truncated?e('small',{},t('В журнале сохранена часть запроса')):null,
+      div('row',apply),status?e('small',{},t(status)):null,
+      info.rollback.length?rollback:null));
+  }
   const load=cursor=>auditView(target,stamp,cursor).catch(error=>showError(target,stamp,error));
   target.replaceChildren(div('panel stack',
     div('row spread',e('h2',{},t('Журнал действий')),button(t('Обновить'),()=>load(null))),
-    rows.length?resultTable({columns:['Время','Пользователь','Действие','Подключение','Кого изменили','Результат'].map(key=>t(key)),rows}):e('p',{},t('Записей пока нет')),
+    rows.length?resultTable({columns:['Время','Пользователь','Действие','Подключение','Кого изменили','Результат'].map(key=>t(key)),rows},
+      row=>{
+        const item=page.entries[rows.indexOf(row)];
+        return item.undo_state?button(t('Просмотр SQL'),click(()=>details(item.id))):'—';
+      }):e('p',{},t('Записей пока нет')),
     page.next==null?null:div('row',button(t('Более ранние записи'),()=>load(page.next))),
   ));
 }

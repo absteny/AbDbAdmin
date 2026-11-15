@@ -301,3 +301,14 @@ textarea.sql-console-input::placeholder{color:#799a9b}
 .relationship-stage.has-depth{transform:perspective(1050px) rotateX(12deg);transform-origin:top;transform-style:preserve-3d}
 .relationship-stage.has-depth .relationship-card{transform:translateZ(10px)}
 .relationship-stage.has-depth .relationship-card.current{transform:translateZ(24px)}
+
+.loader-copy{display:grid;justify-items:center;gap:.55rem;min-width:min(18rem,85vw)}
+.loader-brand{font-size:clamp(1.8rem,7vw,2.9rem);font-weight:800;letter-spacing:-.06em;line-height:1}
+#request-loader-label{color:var(--muted);font-size:.9rem;font-weight:550}
+.loader-track{position:relative;overflow:hidden;width:7rem;height:.22rem;background:#bcdfda;border-radius:1rem;margin-top:.35rem}
+.loader-track::after{content:"";position:absolute;inset:0 auto 0 0;width:36%;border-radius:inherit;background:#087e83;animation:loader-travel 1.4s ease-in-out infinite alternate}
+@keyframes loader-travel{to{transform:translateX(178%)}}
+@media(prefers-reduced-motion:reduce){.loader-track::after{animation:none}}
+.audit-statement{gap:.3rem}
+.audit-statement pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.audit-parameters{max-height:9rem;overflow:auto;padding:.55rem;background:#e5f4f1;border-radius:.55rem}
